@@ -1,5 +1,11 @@
 # codeontic
 
+## 0.10.1
+
+### Patch Changes
+
+- cbc4fcb: package.json 补 `repository` / `homepage` / `bugs`——没有 repository 字段时，npm 包页无法把 README 里的相对图片路径重写到仓库，导致全部图片裂图。
+
 ## 0.10.0
 
 ### Minor Changes
@@ -145,7 +151,7 @@
   **新增字段（每条边）**：
 
   - `origin: "static" | "observed" | "both"` —— 从 `category` 派生，把观测边从"只用来对账的输入"提升为和静态事实并列的第二事实来源，图上每条边都能看出来自哪一侧。
-  - `observedOnlyKnownEndpoints: boolean`（仅 `observed-only` 边）—— 区分"两端在静态侧都已知，只是这条边本身没提取到"（提取器盲区）vs "至少一端是静态词表压根没见过的东西"（全新依赖，声明缺口，比如线上 trace 发现的配置服务/CAS/目标仓B 这类静态完全未建模的外部依赖）。
+  - `observedOnlyKnownEndpoints: boolean`（仅 `observed-only` 边）—— 区分"两端在静态侧都已知，只是这条边本身没提取到"（提取器盲区）vs "至少一端是静态词表压根没见过的东西"（全新依赖，声明缺口，比如线上 trace 发现的配置服务/CAS/目标仓 B 这类静态完全未建模的外部依赖）。
   - `queueStaticEvidence: boolean`（仅 `queue-mediated` 边）—— 非权威辅助佐证：该 pair 两端组件是否各自有一条指向 `toKind==="queue"` 节点的静态边。不参与分类判断，false 不代表配对错误。
 
   **`--compare-edges` 文件 schema 再次放宽**（仍是 `.strict()`，不是 `.passthrough()`）：真实 trace 导出的行比 `{from,to}` 骨架丰富得多，新增可选字段 `viaQueue`/`kind`（驱动 queue-mediated 判定）、`edgeKind`/`rawHosts`/`spanName`/`operation`/`count`/`sampleTraceIds`（纯诊断性，不参与任何分类逻辑）。
