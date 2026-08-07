@@ -17,8 +17,8 @@ import {
 } from "../../hosts/sections.js";
 import { type SettingsMergeOutcome, mergeHooksIntoSettings } from "../../hosts/settings.js";
 import {
-  GITHUB_ACTIONS_PIN_MARKER,
   CODEONTIC_SKILL,
+  GITHUB_ACTIONS_PIN_MARKER,
   LOOP_DISCOVERY_PARALLEL_PROMPT,
   LOOP_DISCOVERY_PROMPT,
   SETUP_PR_TEMPLATE_PROMPT,
