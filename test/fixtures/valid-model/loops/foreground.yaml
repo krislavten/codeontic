@@ -1,0 +1,22 @@
+# array-of-nodes file (mirrors how the real seed groups loops by §3.x section)
+- id: L1
+  kind: loop
+  title: Session Startup 状态机
+  boundary: "POST /sessions → ready/failed"
+  owner: "packages/control-plane 单写,apps/control-worker 消费"
+  section: "3.1"
+
+- id: L1a
+  kind: loop
+  title: "↳ Gate 聚合(内嵌)"
+  boundary: "五闸门两相扫描"
+  owner: "packages/control-plane 单写,apps/control-worker 消费"
+  parent: L1
+  embedded: true
+
+- id: L2
+  kind: loop
+  title: Run/Turn 状态机
+  boundary: "run 创建 → completed/failed"
+  owner: "packages/control-plane run-service"
+  section: "3.1"

@@ -1,0 +1,7 @@
+id: DEBT-SL-synth
+kind: debt
+category: dead_state_machine
+subject: 合成遗留状态表
+reality: "synth_legacy_status 列已无写点，仅历史读取"
+owner: "packages/synth-owner"
+removal_condition: "确认无消费方后删除该列"

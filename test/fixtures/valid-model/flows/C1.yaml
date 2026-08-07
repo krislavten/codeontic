@@ -1,0 +1,5 @@
+# single-node file (the other supported shape)
+id: C1
+kind: flow
+title: 一次对话端到端
+traverses: [L1, L2]

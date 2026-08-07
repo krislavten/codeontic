@@ -1,0 +1,91 @@
+name: CI
+
+# The gate the release flow leans on. `release.yml` re-runs these same checks
+# before publishing rather than trusting a green tick from an earlier commit —
+# but this is where a problem should surface first, on the PR that caused it.
+on:
+  # Every PR, not just those targeting main. A stacked PR (base = another PR's
+  # branch) is a legitimate shape — it lets a reviewer reject an architectural
+  # decision without also losing the fixes underneath it — but with
+  # `branches: [main]` those PRs got NO checks at all. Not a failure: silence,
+  # which reads like a pass. The change most in need of a gate was the one
+  # running without one.
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Puppeteer downloads its browser in a postinstall, which a pnpm-store
+      # cache hit skips — so the browser is present on a cold run and absent on
+      # every warm one. That produced a suite that passed once and failed after.
+      # Installing it explicitly (and caching it under its own key) makes it a
+      # stated dependency rather than a side effect of cache state.
+      - name: Cache puppeteer browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/puppeteer
+          key: puppeteer-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Ensure puppeteer browser is installed
+        run: pnpm exec puppeteer browsers install chrome-headless-shell
+
+      # ubuntu-24.04 restricts unprivileged user namespaces via AppArmor, which
+      # is exactly what Chromium's sandbox needs — without this the mermaid
+      # render tests fail on the sandbox rather than on anything about mermaid.
+      # Lifting the restriction (rather than passing --no-sandbox) keeps CI
+      # rendering under the same sandbox a developer's machine uses, so the
+      # tests still exercise the real path.
+      - name: Allow unprivileged user namespaces (Chromium sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Squash-merging a base PR orphans its branch from main, so a child merged
+      # afterwards lands on that orphan — GitHub still says MERGED and the code
+      # never reaches main. Nothing errors. This makes the stack visible while
+      # the PR is still open, and deliberately does NOT fail: stacked PRs are
+      # allowed, they just must be merged in a way that survives the base.
+      - name: Warn if this PR is stacked (base is not main)
+        if: github.event_name == 'pull_request' && github.base_ref != 'main'
+        run: |
+          echo "::warning title=Stacked PR::Base is '${{ github.base_ref }}', not 'main'. Merge the base with a MERGE COMMIT (not squash), or retarget this PR to main before merging — otherwise this PR can merge into an orphaned branch and its code never reaches main. See CONTRIBUTING.md."
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      # Build BEFORE test, not after: one test walks the built `dist/` to prove
+      # the published package leaks no target-repo identifiers, and it can only
+      # do that against a dist that exists. Clean build so the check sees output
+      # produced by this commit rather than anything left over.
+      - name: Build
+        run: pnpm run build:clean
+
+      - name: Verify dist is publishable
+        run: pnpm run verify:dist
+
+      - name: Test
+        run: pnpm test

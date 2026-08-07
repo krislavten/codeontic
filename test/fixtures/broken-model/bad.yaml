@@ -1,0 +1,3 @@
+# kind is missing -> ModelNode discriminated union rejects this
+id: L1
+title: not a valid node

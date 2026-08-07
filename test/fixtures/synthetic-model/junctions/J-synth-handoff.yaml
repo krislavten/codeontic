@@ -1,0 +1,15 @@
+id: J-synth-handoff
+kind: junction
+title: 合成交接风险点
+risk_class: handoff
+between: [L90, N90]
+scenarios: [GWT-L90-001]
+evidence:
+  - id: EV-SL1-001
+    kind: code
+    anchor: "src/synth/main.ts#SynthLoop.handoff"
+    note: "handoff 逻辑在 L120-L135"
+  - id: EV-SL1-002
+    kind: spec
+    anchor: "docs/synth-spec.md#handoff_contract"
+    note: "见 §2.3"

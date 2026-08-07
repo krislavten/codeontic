@@ -1,0 +1,18 @@
+# one bad element (invalid id) sitting among otherwise-valid siblings
+- id: L1
+  kind: loop
+  title: good sibling one
+  boundary: b
+  owner: o
+
+- id: L1-NOT-A-VALID-ID
+  kind: loop
+  title: the broken one
+  boundary: b
+  owner: o
+
+- id: L2
+  kind: loop
+  title: good sibling two
+  boundary: b
+  owner: o

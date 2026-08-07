@@ -1,0 +1,26 @@
+- id: L90
+  kind: loop
+  title: 合成主循环
+  boundary: "created → running → done/failed"
+  owner: "packages/synth-owner"
+  section: "1.1"
+  anchors: ["src/synth/main.ts#SynthLoop"]
+  consumes_queues: ["synth:process"]
+  scenarios: [GWT-L90-001]
+
+- id: L90a
+  kind: loop
+  title: "↳ 合成内嵌子机(内嵌)"
+  boundary: "两相扫描示例"
+  owner: "packages/synth-owner"
+  parent: L90
+  embedded: true
+  anchors: ["src/synth/main.ts#SynthLoop.subphase"]
+
+- id: N90
+  kind: loop
+  title: 合成休眠循环(dormant 边界用例)
+  boundary: "unwired 占位"
+  owner: null
+  dormant: true
+  anchors: ["src/synth/dormant.ts#DormantHandler"]

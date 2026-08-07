@@ -1,0 +1,10 @@
+# side-channel query output — gitignored wherever it lands (the tool writes
+# it under <targetDir>/.codeontic/ws/, and targetDir may be a nested dir like
+# examples/some-target, not just the repo root).
+**/.codeontic/ws/
+node_modules/
+package-lock.json
+.DS_Store
+dist/
+coverage/
+*.tsbuildinfo

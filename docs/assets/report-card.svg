@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300"
+     role="img" aria-labelledby="t d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+  <title id="t">codeontic conformance report card</title>
+  <desc id="d">A conformance report card grading twelve modeled behaviors: order state machine met, retry queue partial (no scenario), webhook dispatch gap (test missing), queue arbitration met — with a summary bar of eight met, three partial, one gap.</desc>
+
+  <rect x="1" y="1" width="1198" height="298" rx="16" fill="#0d1117" stroke="#1c2128" stroke-width="1.5"/>
+
+  <!-- header -->
+  <text x="40" y="52" font-size="18" fill="#e6edf3" font-weight="600">conformance</text>
+  <text x="1160" y="52" font-size="14" fill="#7d8590" text-anchor="end">12 nodes · model → code</text>
+  <line x1="40" y1="70" x2="1160" y2="70" stroke="#1c2128" stroke-width="1"/>
+
+  <!-- rows -->
+  <g font-size="15.5">
+    <g transform="translate(40,108)">
+      <circle cx="8" cy="-5" r="8" fill="#3fb950"/>
+      <text x="32" y="0" fill="#adbac7"><tspan fill="#e6edf3">L1</tspan>  order state machine</text>
+      <text x="1120" y="0" fill="#3fb950" text-anchor="end">met</text>
+    </g>
+    <g transform="translate(40,144)">
+      <path d="M8 -13 A8 8 0 0 1 8 3 Z" fill="#d29922"/>
+      <circle cx="8" cy="-5" r="8" fill="none" stroke="#d29922" stroke-width="1.5"/>
+      <text x="32" y="0" fill="#adbac7"><tspan fill="#e6edf3">L2</tspan>  retry queue</text>
+      <text x="1120" y="0" fill="#d29922" text-anchor="end">partial · no-scenario</text>
+    </g>
+    <g transform="translate(40,180)">
+      <circle cx="8" cy="-5" r="8" fill="none" stroke="#f85149" stroke-width="1.5"/>
+      <text x="32" y="0" fill="#adbac7"><tspan fill="#e6edf3">L3</tspan>  webhook dispatch</text>
+      <text x="1120" y="0" fill="#f85149" text-anchor="end">gap · test-missing</text>
+    </g>
+    <g transform="translate(40,216)">
+      <circle cx="8" cy="-5" r="8" fill="#3fb950"/>
+      <text x="32" y="0" fill="#adbac7"><tspan fill="#e6edf3">J1</tspan>  queue arbitration</text>
+      <text x="1120" y="0" fill="#3fb950" text-anchor="end">met</text>
+    </g>
+  </g>
+
+  <!-- summary bar: met / partial / gap -->
+  <g transform="translate(40,254)">
+    <rect x="0" y="0" width="740" height="10" rx="5" fill="#3fb950"/>
+    <rect x="748" y="0" width="278" height="10" rx="5" fill="#d29922"/>
+    <rect x="1034" y="0" width="86" height="10" rx="5" fill="#f85149"/>
+    <text x="0" y="30" font-size="13" fill="#7d8590">8 met</text>
+    <text x="560" y="30" font-size="13" fill="#7d8590">3 partial</text>
+    <text x="1120" y="30" font-size="13" fill="#7d8590" text-anchor="end">1 gap</text>
+  </g>
+</svg>

@@ -1,0 +1,106 @@
+name: Release
+
+# Two-step release, so publishing is a reviewable act rather than a side effect
+# of merging a feature:
+#
+#   1. A PR lands on main carrying a changeset (`.changeset/*.md`). This job
+#      opens/updates a "chore: version packages" PR that applies every pending
+#      changeset — version bump + CHANGELOG.
+#   2. Merging THAT PR runs this job again, now with no pending changesets, so
+#      it publishes to npm instead.
+#
+# A PR with no changeset simply never triggers a release, which is the intended
+# behavior for docs/CI/refactor work — but it also means forgetting one is a
+# silent non-release. `pnpm changeset` when in doubt.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Queue, never cancel. A run that is mid-publish must finish: killing it can
+  # leave the registry updated but the version-bump commit unpushed.
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    # Never let a fork's push publish under this package name.
+    if: github.repository == 'krislavten/codeontic'
+    permissions:
+      contents: write # version-bump commit + tags
+      pull-requests: write # the "version packages" PR
+      id-token: write # OIDC for npm Trusted Publishing — the reason no NPM_TOKEN appears anywhere here
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # changesets diffs against the base branch
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
+
+      # Trusted Publishing (OIDC) needs npm 11+. The runner's bundled npm is
+      # older, and without this the publish falls back to looking for a token
+      # that deliberately does not exist.
+      - name: Upgrade npm for Trusted Publishing
+        run: npm install -g npm@^11
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Same two reasons as ci.yml: puppeteer's browser download is a
+      # postinstall that cache hits skip, and Chromium's sandbox needs the
+      # unprivileged user namespaces ubuntu-24.04 restricts by default.
+      - name: Cache puppeteer browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/puppeteer
+          key: puppeteer-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Ensure puppeteer browser is installed
+        run: pnpm exec puppeteer browsers install chrome-headless-shell
+
+      - name: Allow unprivileged user namespaces (Chromium sandbox)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # Re-run the full gate here rather than trusting CI's tick on the same
+      # commit: this job is what actually ships bytes, and the cost of a
+      # duplicated 30s check is far below the cost of publishing a bad version
+      # (npm makes unpublishing hard on purpose).
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm run build:clean
+
+      - name: Verify dist is publishable
+        run: pnpm run verify:dist
+
+      - name: Test
+        run: pnpm test
+
+      # `publish` runs only when there are no pending changesets; otherwise the
+      # action opens/updates the version PR and publishes nothing. `pnpm release`
+      # itself rebuilds clean and `prepublishOnly` verifies dist before anything
+      # reaches the registry.
+      - name: Create version PR or publish
+        uses: changesets/action@v1
+        with:
+          # Not bare `changeset version`: it reformats package.json to its own
+          # taste, which biome then rejects — the version PR would arrive with
+          # CI already red. `release:version` re-formats after the bump.
+          version: pnpm run release:version
+          publish: pnpm release
+          title: "chore: version packages"
+          commit: "chore: version packages"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

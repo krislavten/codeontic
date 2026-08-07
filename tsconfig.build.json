@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "incremental": true,
+    // Inside outDir on purpose. The build info records what was already
+    // emitted, so if it outlives `dist` — the default puts it at the project
+    // root, where `rm -rf dist` doesn't touch it — tsc concludes everything is
+    // up to date and emits NOTHING, exiting 0. `npm publish` has no build hook
+    // and ships whatever `dist/` holds, so that combination publishes an empty
+    // package while every command reports success. Keeping the two in one
+    // directory makes them share a lifetime: delete the output, lose the memory
+    // of having produced it.
+    //
+    // The trade this accepts: any clean build is a full build. That is already
+    // true in CI (it runs build:clean and caches only the pnpm store, never
+    // dist), so what's left is local incremental builds — which keep working,
+    // since `pnpm build` doesn't remove dist. Incremental state that can
+    // outlive its own output is worth less than it costs.
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,9 @@
+id: GWT-L90-001
+kind: scenario
+given: 合成主循环处于 running 状态
+when: 触发合成交接事件
+then: 状态转为 done 且交接记录写入
+level: integration
+verified_by: ["test/synth/handoff.test.ts#handoff_happy_path"]
+applies_to:
+  nodes: [L90]
