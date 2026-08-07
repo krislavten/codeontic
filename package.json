@@ -16,11 +16,7 @@
     "codeontic": "dist/cli/index.js"
   },
   "//files": "Ship the dist engine only; seeds/examples/research/docs are excluded so the published package carries no target-repo internals. .tsbuildinfo lives inside dist (see tsconfig.build.json) and is build state, not shipped code.",
-  "files": [
-    "dist",
-    "!dist/**/*.map",
-    "!dist/.tsbuildinfo"
-  ],
+  "files": ["dist", "!dist/**/*.map", "!dist/.tsbuildinfo"],
   "engines": {
     "node": ">=22.0.0"
   },
@@ -57,8 +53,6 @@
     "vitest": "^2.1.8"
   },
   "pnpm": {
-    "onlyBuiltDependencies": [
-      "puppeteer"
-    ]
+    "onlyBuiltDependencies": ["puppeteer"]
   }
 }
