@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="zh" data-page="home">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>codeontic —— 人审模型，agent 写码</title>
+<meta name="description" content="codeontic 在代码之上建一层逻辑模型：loop、flow、junction、scenario、debt 五种节点锚定到真实代码符号，每次 PR 确定性校验。门禁不调 LLM、不联网、不运行你的代码。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://krislavten.github.io/codeontic/">
+<meta property="og:title" content="codeontic —— 人审模型，agent 写码">
+<meta property="og:description" content="在代码之上建一层人能审、机器能核对的逻辑模型。建模是真相源，代码只是投影，随时可以重写。">
+<meta property="og:image" content="https://krislavten.github.io/codeontic/assets/site-showcase.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://krislavten.github.io/codeontic/assets/site-showcase.png">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23ec3013'/></svg>">
+<style>
+:root{
+  --bg:#f3f2f2; --surface:#eae9e9; --text:#201e1d;
+  --accent:#ec3013; --accent-600:#dd2b0f; --accent-700:#ae1800; --accent-400:#ff9783;
+  --n200:#eae7e7; --n300:#d7d3d3; --n500:#9b9797; --n900:#2d2b2b;
+  --divider:rgba(32,30,29,.4);
+  --muted:rgba(32,30,29,.55);
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{font-weight:800;line-height:1.12;letter-spacing:-.015em;margin:0 0 10px}
+h1{font-size:clamp(30px,4.4vw,52px)}
+h2{font-size:clamp(24px,3vw,32px)}
+h3{font-size:22px}
+h4{font-size:19px}
+p{margin:0 0 12px}
+p:last-child{margin-bottom:0}
+b{font-weight:700}
+img{max-width:100%;height:auto;display:block}
+code{font-family:var(--mono);font-size:.92em}
+a{color:inherit}
+
+/* ── language + page switching, CSS-driven ── */
+[data-lang]{display:none}
+html[lang=zh] [data-lang=zh],html[lang=en] [data-lang=en]{display:revert}
+main{display:none}
+html[data-page=home] main#home,html[data-page=concept] main#concept,
+html[data-page=showcase] main#showcase,html[data-page=docs] main#docs{display:block}
+
+/* ── layout ── */
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+.sec{border-top:2px solid var(--divider)}
+.sec.tint{background:var(--surface)}
+.pad{padding:48px 0}
+.pad-lg{padding:56px 0 40px}
+.muted{color:var(--muted)}
+.eyebrow{font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--accent-700);margin:0 0 14px}
+.lead{font-size:17px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+
+/* ── header ── */
+header{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:2px solid var(--divider)}
+header .wrap{display:flex;align-items:center;gap:20px;flex-wrap:wrap;padding-top:14px;padding-bottom:14px}
+.logo{font-weight:800;font-size:19px;letter-spacing:-.02em;text-decoration:none}
+nav{display:flex;gap:20px;flex:1;flex-wrap:wrap}
+nav a{font-size:14px;font-weight:600;text-decoration:none;padding-bottom:2px;border-bottom:2px solid transparent}
+html[data-page=home] [data-navlink=home],html[data-page=concept] [data-navlink=concept],
+html[data-page=showcase] [data-navlink=showcase],html[data-page=docs] [data-navlink=docs]{
+  border-bottom-color:var(--accent);color:var(--accent-700)}
+.langsw{display:flex;border:1px solid var(--divider)}
+.langsw button{font-family:var(--sans);font-weight:800;font-size:12px;padding:5px 10px;border:0;
+  background:transparent;color:var(--text);cursor:pointer}
+html[lang=zh] [data-setlang=zh],html[lang=en] [data-setlang=en]{background:var(--accent);color:var(--bg)}
+
+/* ── buttons ── */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;
+  text-decoration:none;font-family:var(--sans);font-weight:800;font-size:14px;line-height:1.2;
+  padding:11px 16px;border:1px solid transparent;color:var(--text);background:transparent}
+.btn-primary{background:var(--accent);color:var(--bg)}
+.btn-primary:hover{background:var(--accent-600)}
+.btn-secondary{border-color:var(--divider)}
+.btn-secondary:hover{background:rgba(32,30,29,.07)}
+.btn-copy{font-family:var(--mono);font-weight:400}
+
+/* ── divided column grids ── */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--col,240px),1fr));gap:0}
+.cols>*{padding:0 26px;border-right:2px solid var(--divider)}
+.cols>:first-child{padding-left:0}
+.cols>:last-child{border-right:0;padding-right:0}
+.cols p{margin:0}
+.cols4{--col:220px}
+
+/* ── stat strip ── */
+.stats{--col:150px;margin:28px 0;border-top:2px solid var(--divider);border-bottom:2px solid var(--divider)}
+.stats>*{padding:20px}
+.stats>:first-child{padding-left:0}
+.stats>:last-child{padding-right:0}
+.stat-n{font-weight:800;font-size:34px;line-height:1}
+.stat-l{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+
+/* ── numbered / rule-topped cards ── */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(var(--col,250px),1fr));gap:24px;margin-top:24px}
+.cards>*{border-top:2px solid var(--divider);padding-top:14px}
+.num{font-weight:800;font-size:28px;color:var(--accent);line-height:1;margin-bottom:10px}
+.big{font-weight:800;font-size:44px;line-height:1;color:var(--accent);margin-bottom:12px}
+.path{font-family:var(--mono);font-size:13px;font-weight:700;margin-bottom:8px;word-break:break-all}
+
+/* ── code ── */
+pre{margin:0;background:var(--n900);color:var(--n200);padding:22px;overflow-x:auto;
+  font-family:var(--mono);font-size:13.5px;line-height:1.9}
+pre .c{color:var(--n500)}
+pre.small{padding:20px;font-size:13px;line-height:1.8}
+
+/* ── showcase image card ── */
+.shot{display:block;border:2px solid var(--divider);text-decoration:none}
+
+/* ── banner ── */
+.banner{background:var(--accent);color:var(--bg)}
+.banner h2{font-size:clamp(28px,4vw,48px);margin:0 0 18px}
+.banner p{margin:0;color:rgba(243,242,242,.88)}
+
+/* ── tables ── */
+.scroll-x{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+.facts td{padding:16px 12px 16px 0;border-bottom:1px solid var(--divider);vertical-align:top}
+.facts td:first-child{width:180px;font-weight:700}
+.facts tr:last-child td{border-bottom-width:2px}
+.cmds{min-width:640px;margin-top:14px}
+.cmds th{text-align:left;padding:10px 12px 10px 0;font-family:var(--mono);font-size:12px;
+  letter-spacing:.06em;text-transform:uppercase;font-weight:700;border-bottom:2px solid var(--divider)}
+.cmds td{padding:14px 12px 14px 0;border-bottom:1px solid var(--divider);vertical-align:top}
+.cmds tr:last-child td{border-bottom-width:2px}
+.cmds td:first-child{font-family:var(--mono);font-weight:700;color:var(--accent-700);width:150px}
+.cmds .gate{font-weight:700;color:var(--accent);width:110px}
+.cmds .adv{color:var(--muted);width:110px}
+
+/* ── faq ── */
+.faq{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:36px;margin-top:16px}
+.faq>div>div{border-top:2px solid var(--divider);padding:16px 0}
+.faq h4{margin-bottom:8px}
+
+/* ── footer ── */
+footer{border-top:2px solid var(--divider);background:var(--n900);color:var(--n300)}
+footer .wrap{display:flex;gap:24px;flex-wrap:wrap;justify-content:space-between;
+  padding-top:36px;padding-bottom:36px}
+.foot-logo{font-weight:800;font-size:19px;color:var(--bg);margin-bottom:6px}
+.foot-links{display:flex;gap:26px;flex-wrap:wrap;font-size:14px}
+.foot-links a{color:var(--accent-400);text-decoration:none}
+
+@media (max-width:760px){
+  .cols>*{padding:20px 0;border-right:0;border-top:2px solid var(--divider)}
+  .cols>:first-child{padding-top:0;border-top:0}
+  /* the stat strip stays 2-up on phones, so every cell keeps its own rule */
+  .stats{border-top:0;border-bottom:0;margin:20px 0 24px}
+  .stats>*,.stats>:first-child{padding:16px 0;border-top:2px solid var(--divider)}
+  .pad,.pad-lg{padding:36px 0}
+  .wrap{padding:0 18px}
+  h3{font-size:20px}
+  nav{gap:14px;order:3;flex-basis:100%}
+  header .wrap{gap:12px}
+}
+</style>
+<script>
+(function(){
+  var l;try{l=localStorage.getItem('codeontic.site.lang')}catch(e){}
+  document.documentElement.lang=l==='en'?'en':'zh';
+  var p=(location.hash||'').slice(1);
+  document.documentElement.dataset.page=
+    ['home','concept','showcase','docs'].indexOf(p)>=0?p:'home';
+})();
+</script>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="logo" href="#home">codeontic</a>
+    <nav>
+      <a href="#home" data-navlink="home"><span data-lang="zh">首页</span><span data-lang="en">Home</span></a>
+      <a href="#concept" data-navlink="concept"><span data-lang="zh">概念</span><span data-lang="en">Concept</span></a>
+      <a href="#showcase" data-navlink="showcase">Showcase: pi</a>
+      <a href="#docs" data-navlink="docs"><span data-lang="zh">文档</span><span data-lang="en">Docs</span></a>
+    </nav>
+    <div class="row" style="gap:10px">
+      <div class="langsw">
+        <button data-setlang="zh" type="button">中</button><button data-setlang="en" type="button">EN</button>
+      </div>
+      <a class="btn btn-primary" href="https://github.com/krislavten/codeontic" target="_blank" rel="noreferrer">GitHub</a>
+    </div>
+  </div>
+</header>
+
+<!-- ─────────────── HOME ─────────────── -->
+<main id="home">
+  <section class="wrap pad-lg">
+    <p class="eyebrow" style="margin-bottom:18px">deterministic · zero-LLM gate · open source</p>
+    <h1 data-lang="zh" style="max-width:16em;margin-bottom:20px">人审模型，agent 写码。</h1>
+    <h1 data-lang="en" style="max-width:15em;margin-bottom:20px">Humans review the model. Agents write the code.</h1>
+    <p class="lead" style="color:rgba(32,30,29,.78)" data-lang="zh">codeontic 在代码之上建一层逻辑建模——像汇编之上建高级语言一样。流程、循环、模块交接点、测试覆盖，全部建成结构化模型，锚定到真实代码符号上。<b>建模才是真相源，代码只是投影，随时可以重写。</b></p>
+    <p class="lead" style="color:rgba(32,30,29,.78)" data-lang="en">codeontic builds a logic model above your code — like high-level languages above assembly. It models system behavior with a fixed ontology (loops, flows, junctions, scenarios, debts), anchored to real code symbols, verified on every PR. You don't read every line; you still know what the system does.</p>
+    <div class="row" style="margin-top:26px">
+      <button class="btn btn-primary btn-copy" type="button" data-copy="npx codeontic init">npx codeontic init</button>
+      <a class="btn btn-secondary" href="#showcase">
+        <span data-lang="zh">看 pi 的完整地图 →</span><span data-lang="en">See the pi map →</span>
+      </a>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap">
+      <img src="assets/hero.svg" width="1200" height="360" style="padding:32px 0"
+           alt="codeontic——模型是系统的骨架，代码是投影：代码随便改，骨架不失真。">
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap pad">
+      <p class="eyebrow">Background</p>
+      <h2 data-lang="zh">这个项目从一次质疑开始</h2>
+      <h2 data-lang="en">This project started with a challenge</h2>
+      <p data-lang="zh">我们团队很早就用 AI agent 写日常代码。有一次跟运维同学沟通项目细节，发现自己答不上来——agent 写的东西太多了，很多逻辑我们自己也说不清。运维同学直接说：<b>"最终还是要人控制 AI，不能让 AI 控制了咱。"</b></p>
+      <p data-lang="en">Our team adopted AI agents for day-to-day coding early on. One day, discussing project details with the ops team, we realized we couldn't answer their questions — agents had written so much code that we'd lost track of the details. Their response was blunt: <b>"Humans need to stay in control of the AI, not the other way around."</b></p>
+      <p data-lang="zh">他说得对。但回头让人手写代码，效率不允许——这条路走不回去。问题不是要不要用 AI，而是用了之后，怎么不丢掉对系统的掌控。</p>
+      <p data-lang="en">They were right. But going back to writing everything by hand wasn't an option either. The question wasn't whether to use AI — it was how to keep your grip on the system after you do.</p>
+      <p class="muted" data-lang="zh">codeontic 就是为了回答这个问题。不是限制 agent，是在代码之上建一层人能审、机器能核对的逻辑模型——你不需要读每一行代码，但你仍然知道系统在做什么。</p>
+      <p class="muted" data-lang="en">codeontic was built to answer that question. Not by restricting agents, but by building a logic model above the code — one that humans review and machines verify. You don't read every line, but you still know what the system does.</p>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap pad">
+      <p class="eyebrow">The problem</p>
+      <h2 data-lang="zh">代码量在涨，人的理解力没有跟上</h2>
+      <h2 data-lang="en">Code grows; your understanding doesn't keep up</h2>
+      <div class="cols" style="--col:260px;margin-top:24px">
+        <div>
+          <h4 data-lang="zh">单仓越来越大</h4>
+          <h4 data-lang="en">Repos keep growing</h4>
+          <p class="muted" data-lang="zh">几十万行代码，agent 一次读不完，人也不可能从头看一遍。</p>
+          <p class="muted" data-lang="en">Hundreds of thousands of lines — too much for an agent's context, and nobody reads it end to end.</p>
+        </div>
+        <div>
+          <h4 data-lang="zh">行为散落各处</h4>
+          <h4 data-lang="en">Behavior is scattered</h4>
+          <p class="muted" data-lang="zh">队列消费、定时器、重试链、状态机——系统真正的行为藏在代码各个角落，没有一个地方完整写着"它应该怎么运转"。</p>
+          <p class="muted" data-lang="en">Queue consumers, timers, retry chains, state machines — real behavior hides in corners, and nothing states end to end how the system is supposed to run.</p>
+        </div>
+        <div>
+          <h4 data-lang="zh">agent 写的码没人审</h4>
+          <h4 data-lang="en">Nobody reviews agent code</h4>
+          <p class="muted" data-lang="zh">agent 产出快，人不再逐行读。脑子里那张系统图很快就旧了——但你还得靠它做技术决策。</p>
+          <p class="muted" data-lang="en">Agents produce fast; nobody reads line by line. Your mental picture of the system goes stale — but you still need it to make technical decisions.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap pad">
+      <p class="eyebrow">The approach</p>
+      <h2 data-lang="zh">像汇编之上建高级语言一样，在代码之上建一层逻辑模型</h2>
+      <h2 data-lang="en">Build an abstraction layer above code, like a high-level language above assembly</h2>
+      <p class="muted" style="margin-bottom:24px" data-lang="zh">codeontic 用五种节点——loop（循环）、flow（链路）、junction（交接点）、scenario（场景）、debt（旧账）——给系统行为建模。每个节点锚定到真实的代码符号上，每条场景指向真实的测试。模型就是真相源：代码只是它的投影，可以随时重写。</p>
+      <p class="muted" style="margin-bottom:24px" data-lang="en">codeontic models system behavior with five node kinds — loop, flow, junction, scenario, debt — each anchored to real code symbols, each scenario pointing at a real test. The model is the source of truth; code is its projection and can be rewritten at will.</p>
+      <img src="assets/directions.svg" width="1200" height="360" loading="lazy"
+           alt="模型与代码之间的三个方向：conformance 从模型到代码打分，reconcile 从代码找回漏登记的信号，coverage 是模型自查。方向从不反转。">
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap pad cols cols4">
+      <div>
+        <p class="eyebrow">01</p>
+        <h3 data-lang="zh">高频重构，低压力</h3>
+        <h3 data-lang="en">Refactor often, stress-free</h3>
+        <p class="muted" data-lang="zh">代码怎么改都行——改完跑 <code>conformance</code>，它逐条告诉你结构还在不在。重构的压力从"怕出事"变成"跑一遍就知道"。</p>
+        <p class="muted" data-lang="en">Rewrite anything — <code>conformance</code> tells you piece by piece whether the structure survived. Refactoring goes from "afraid to break things" to "run and see."</p>
+      </div>
+      <div>
+        <p class="eyebrow">02</p>
+        <h3 data-lang="zh">给人做技术决策参考</h3>
+        <h3 data-lang="en">Inform human decisions</h3>
+        <p class="muted" data-lang="zh">系统里有什么循环在跑、逻辑怎么流转、哪里没有测试守着——一张图摆在面前，做架构决策有据可依。</p>
+        <p class="muted" data-lang="en">What loops are running, how logic flows, where nothing guards — a map on the table so architectural decisions have evidence behind them.</p>
+      </div>
+      <div>
+        <p class="eyebrow">03</p>
+        <h3 data-lang="zh">给 agent 快速查逻辑</h3>
+        <h3 data-lang="en">Fast logic lookup for agents</h3>
+        <p class="muted" data-lang="zh">agent 不用从头读几十万行代码——查模型就知道这个系统的结构、哪些行为已建模、哪些还有缺口。</p>
+        <p class="muted" data-lang="en">Agents don't need to read hundreds of thousands of lines — query the model to know the system's structure, what's modeled, and where the gaps are.</p>
+      </div>
+      <div>
+        <p class="eyebrow">04</p>
+        <h3 data-lang="zh">PR 阶段校验对齐</h3>
+        <h3 data-lang="en">PR-stage alignment checks</h3>
+        <p class="muted" data-lang="zh">每次 PR 自动核对代码和模型的对齐度。门禁确定性运行，亚秒出结果，不调 LLM，不跑你的代码。</p>
+        <p class="muted" data-lang="en">Every PR automatically checks code-to-model alignment. The gate is deterministic, sub-second, and never calls an LLM or runs your code.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap pad">
+      <p class="eyebrow">Showcase</p>
+      <h2 data-lang="zh">实测：670 个文件的仓库，整仓建模</h2>
+      <h2 data-lang="en">Real test: a 670-file repo, modeled whole</h2>
+      <p class="muted" data-lang="zh">earendil-works/pi，一个公开的 agent 工具仓库。5 次并行 agent 会话建模，一次人工合并裁决。</p>
+      <p class="muted" data-lang="en">earendil-works/pi, a public agent-harness monorepo. 5 parallel agent sessions, then one human pass to merge and adjudicate.</p>
+      <div class="cols stats">
+        <div><div class="stat-n">60</div><div class="stat-l">nodes modeled</div></div>
+        <div><div class="stat-n">51</div><div class="stat-l">GWT scenarios</div></div>
+        <div><div class="stat-n">52</div><div class="stat-l">files anchored</div></div>
+        <div><div class="stat-n" style="color:var(--accent)">43 / 7 / 2</div><div class="stat-l">met / partial / gap</div></div>
+      </div>
+      <a class="shot" data-map-link href="examples/pi-overview.html" target="_blank" rel="noreferrer">
+        <img src="assets/site-showcase.png" width="1400" height="1065" loading="lazy"
+             alt="pi 的系统地图：整仓全景按代码包分区，每个方块是一个建模过的 loop 或入口链路，颜色是落实程度。">
+      </a>
+      <div class="row" style="margin-top:18px">
+        <a class="btn btn-primary" data-map-link href="examples/pi-overview.html" target="_blank" rel="noreferrer">
+          <span data-lang="zh">打开交互地图 →</span><span data-lang="en">Open the interactive map →</span>
+        </a>
+        <a class="btn btn-secondary" href="#showcase">
+          <span data-lang="zh">它查出了什么 →</span><span data-lang="en">What it exposed →</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec banner">
+    <div class="wrap" style="padding-top:56px;padding-bottom:56px">
+      <h2 data-lang="zh">人审模型，agent 写码。</h2>
+      <h2 data-lang="en">The model is the source of truth. Code is a projection — rewrite it anytime.</h2>
+      <p data-lang="zh">建模是真相源，代码只是投影，随时可以重写。<b>这是 AI 时代工程团队的分工方式。</b></p>
+      <p data-lang="en"><b>People review the model, agents write the code.</b> That's how engineering teams work in the age of AI.</p>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap pad">
+      <p class="eyebrow">Quick start</p>
+      <pre>npx codeontic init          <span class="c"># model skeleton + agent kit + /codeontic skill front door</span>
+npx codeontic check . --repo-root . --strict-anchors   <span class="c"># deterministic gate (sub-second, zero-LLM)</span>
+npx codeontic conformance . --repo-root .              <span class="c"># met / partial / gap report card</span>
+npx codeontic overview . --repo-root .                 <span class="c"># the interactive system map</span></pre>
+      <p class="muted" style="margin-top:16px" data-lang="zh"><code>init</code> 在你的仓库里写出模型骨架和一套 agent 指令。agent 照着它扫代码、识别行为、起草模型节点。你审核之后才落库——机器发现，人来裁决。</p>
+      <p class="muted" style="margin-top:16px" data-lang="en"><code>init</code> writes a <code>.codeontic/</code> skeleton and an <b>agent kit</b>: instructions a coding agent in your repo follows to discover behavior and draft the model. You review the drafts; nothing lands unverified.</p>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap" style="padding-top:40px;padding-bottom:40px">
+      <div class="row" style="gap:24px;align-items:center">
+        <div style="flex:1;min-width:280px">
+          <h3 data-lang="zh">项目还在早期，欢迎试用</h3>
+          <h3 data-lang="en">Early stage — come try it</h3>
+          <p class="muted" data-lang="zh">目前已支持 TypeScript / JavaScript 项目，npm 可装，门禁已接通 CI。后续会持续完善多语言支持和建模工具链。</p>
+          <p class="muted" data-lang="en">TypeScript / JavaScript projects are fully supported today. Published on npm, CI-ready. Multi-language support and tooling improvements are on the roadmap.</p>
+        </div>
+        <div class="row">
+          <a class="btn btn-primary" href="https://github.com/krislavten/codeontic" target="_blank" rel="noreferrer">GitHub</a>
+          <a class="btn btn-secondary" href="https://www.npmjs.com/package/codeontic" target="_blank" rel="noreferrer">npm</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ─────────────── CONCEPT ─────────────── -->
+<main id="concept">
+  <section class="wrap pad-lg">
+    <p class="eyebrow">Concept</p>
+    <h1 data-lang="zh">一套描述系统行为的结构语言</h1>
+    <h1 data-lang="en">A structural language for system behavior</h1>
+    <p class="lead muted" data-lang="zh">loop（循环）、flow（链路）、junction（交接点）、scenario（场景）、debt（旧账）——五种节点构成一套封闭的词汇表，专门描述系统<i>应该</i>怎么运转。每一条都锚定到真实的代码符号上：写下来就能核对，核对了就能强制执行。</p>
+    <p class="lead muted" data-lang="en">A closed vocabulary (loops, flows, junctions, scenarios, debts) writes down how the system is supposed to run, anchored to real code symbols so the claims can be evidenced and enforced.</p>
+  </section>
+
+  <section class="sec">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <h2 data-lang="zh">模型不是文档，它绑定在三个地方</h2>
+      <h2 data-lang="en">Bound to reality in three places</h2>
+      <div class="cards">
+        <div>
+          <div class="num">1</div>
+          <p data-lang="zh">行为绑定到代码符号上：<code>anchors: path#symbol</code>。</p>
+          <p data-lang="en">A behavior is <b>pinned to a real code symbol</b> (<code>anchors: path#symbol</code>).</p>
+        </div>
+        <div>
+          <div class="num">2</div>
+          <p data-lang="zh">行为写成 GWT 场景：given / when / then，用业务的话写。</p>
+          <p data-lang="en">It is <b>written down as a GWT scenario</b> (given / when / then, in business language).</p>
+        </div>
+        <div>
+          <div class="num">3</div>
+          <p data-lang="zh">场景指向真实测试：<code>verified_by</code>。</p>
+          <p data-lang="en">The scenario <b>points at a real test</b> (<code>verified_by</code>).</p>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:24px" data-lang="zh">机器核对的是这些东西<i>存不存在、指的地方对不对</i>。它不判断"这个测试是否真的测到了场景说的事"——要判断那个就得跑你的代码，而门禁永远不跑你的代码。这条线是故意画的。</p>
+      <p class="muted" style="margin-top:24px" data-lang="en">A deterministic gate checks all three on every pull request, and <code>conformance</code> grades every modeled behavior met / partial / gap, naming the exact missing piece. The engine verifies that these things <i>exist</i> and <i>point where they claim</i> — it does not judge whether a test truly asserts its scenario. That limit is deliberate: proving it would mean running your code, and the gate never does.</p>
+      <img src="assets/report-card.svg" width="1200" height="360" loading="lazy" style="margin-top:26px"
+           alt="打分成绩单：每个建模行为标 met / partial / gap，缺什么点名什么，顶部有汇总条。">
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <p class="eyebrow">Where the idea comes from</p>
+      <h3 data-lang="zh">为什么叫 codeontic</h3>
+      <h3 data-lang="en">Borrowed from ontology, with the direction reversed</h3>
+      <p data-lang="zh">名字来自 code + ontic。本体论是个老办法：用一套固定的概念和关系，把一个领域的结构写成机器能处理的形式。codeontic 的五种节点就是一个专为系统行为设计的小本体——不多不少，刚好够写下"这个系统里有什么机制在运转"。</p>
+      <p data-lang="en">The design borrows from <b>ontology</b> — the old practice of describing a domain as a fixed set of concepts and relations a machine can work with. codeontic's five node kinds are a small ontology purpose-built for system behavior.</p>
+      <p data-lang="zh">关键的区别：传统本体从现实归纳，现实永远对。codeontic 的模型是<b>规范性</b>的——先写下系统应该怎么跑，再让代码来对齐。归纳出来的图只能描述现状；规范性的模型才能审判现状。这也是它能说出"代码错了"的原因。</p>
+      <p data-lang="en">A classical ontology is induced from reality, and reality is always right. This model is <b>normative</b>: write down how the system is supposed to run, then hold the code to it. An induced graph can only describe the present; a normative model can judge it.</p>
+      <img src="assets/graph.svg" width="1200" height="360" loading="lazy" style="margin-top:28px"
+           alt="一小段行为图：loop 和 junction 节点按打分上色，其中一个 loop 用虚线连到真实代码符号。">
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <p class="eyebrow">The model</p>
+      <h2 data-lang="zh">模型长什么样</h2>
+      <h2 data-lang="en">What the model looks like</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:24px;margin-top:20px">
+        <div>
+          <div class="stat-l" style="margin-bottom:8px">.codeontic/model/loops/*.yaml</div>
+          <pre class="small">- id: L1
+  kind: loop
+  title: Order state machine
+  boundary: "pending → processing → shipped/cancelled"
+  owner: packages/orders
+  anchors: ["packages/orders/src/order-service.ts#OrderService"]
+  consumes_queues: ["order:process"]
+  scenarios: [GWT-A1-001]</pre>
+        </div>
+        <div>
+          <div class="stat-l" style="margin-bottom:8px">.codeontic/model/flows/*.yaml</div>
+          <pre class="small">- id: C1
+  kind: flow
+  shape: anchored
+  title: Install a skill
+  anchors: ["src/install.ts#install"]
+  scenarios: [GWT-C1-001]</pre>
+          <p class="muted" style="margin-top:12px" data-lang="zh">完全没有后台循环的仓库——CLI、构建工具、一次性管线——直接给旅程建模。</p>
+          <p class="muted" style="margin-top:12px" data-lang="en">A repo with no background loops at all — a CLI, a build tool, a one-shot pipeline — models its journeys directly instead.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ─────────────── SHOWCASE ─────────────── -->
+<main id="showcase">
+  <section class="wrap pad-lg">
+    <p class="eyebrow">Showcase · earendil-works/pi</p>
+    <h1 data-lang="zh">整仓建模：60 个节点，191 条锚点</h1>
+    <h1 data-lang="en">pi, modeled whole: 60 nodes, 191 anchors</h1>
+    <p class="lead muted" data-lang="zh">pi 是一个公开的 agent 工具仓库：10 个 package，约 670 个 TypeScript 源文件。5 个并行 agent 会话建模，一次人工合并裁决。</p>
+    <p class="lead muted" data-lang="en">pi is a public agent-harness monorepo: 10 packages, ~670 TypeScript source files. The map was built by 5 parallel agent sessions, then one human pass to merge and adjudicate.</p>
+  </section>
+
+  <section class="sec">
+    <div class="wrap scroll-x">
+      <table class="facts">
+        <tbody>
+          <tr><td>model</td><td>30 loops · 19 flows · 7 junctions · 4 debts · 51 scenarios</td></tr>
+          <tr><td>built by</td><td>5 parallel agent sessions, then one human pass to merge and adjudicate</td></tr>
+          <tr><td>gate</td><td><code>check --strict-anchors</code> → exit 0, zero warnings</td></tr>
+          <tr><td>coverage</td><td>52 code files anchored; 13 of the last 26 commits touched one of them (50%)</td></tr>
+          <tr><td>conformance</td><td><b style="color:var(--accent-700)">43 met · 7 partial · 2 gap</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap" style="padding-top:36px;padding-bottom:36px">
+      <a class="shot" data-map-link href="examples/pi-overview.html" target="_blank" rel="noreferrer">
+        <img src="assets/site-showcase.png" width="1400" height="1065" loading="lazy"
+             alt="pi 的系统地图：整仓全景按代码包分区，每个方块是一个建模过的 loop 或入口链路，颜色是落实程度。">
+      </a>
+      <p class="muted" style="margin-top:12px;font-size:13px" data-lang="zh">开页就是整仓全景：按代码包分区，圆角胶囊是入口链路，方块是 loop，颜色是落实程度，虚线是跨包的交接点。往下是 19 条端到端链路、建模细节和旧账清单。</p>
+      <p class="muted" style="margin-top:12px;font-size:13px" data-lang="en">The map opens on the whole-repo panorama: partitioned by package, rounded capsules are entry journeys, boxes are loops, color is conformance status, dashed lines are cross-package junctions. Below it: 19 end-to-end journeys, the modeling detail, and the outstanding ledger.</p>
+      <div class="row" style="margin-top:20px">
+        <a class="btn btn-primary" data-map-link href="examples/pi-overview.html" target="_blank" rel="noreferrer">
+          <span data-lang="zh">打开交互地图 ↗</span><span data-lang="en">Open the full interactive map ↗</span>
+        </a>
+        <span class="muted" style="font-size:13px" data-lang="zh">每条链路、每个 loop 都能点开，代码链接指向 pi 在 <code>666d897</code> 的真实文件。单个自包含 HTML，下载后离线可开。</span>
+        <span class="muted" style="font-size:13px" data-lang="en">Every flow and loop opens into a drawer, and code links point at pi's real files at <code>666d897</code>. One self-contained HTML file — it works offline after a download.</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <h2 data-lang="zh">它查出了什么</h2>
+      <h2 data-lang="en">What the map put where a person could see it</h2>
+      <p class="muted" data-lang="zh">pi 是个健康、活跃的仓库。这样的账每个大仓都有，区别只是有没有一张图把它摆出来。</p>
+      <p class="muted" data-lang="en">pi is healthy and actively developed — every large codebase carries a ledger like this one.</p>
+      <div class="cols" style="--col:260px;margin-top:26px">
+        <div>
+          <div class="big">3</div>
+          <p data-lang="zh"><b>三处功能代码写完了，但生产路径上没有任何人在用。</b></p>
+          <p data-lang="en"><b>Three implementations that are complete but not wired up</b> — finished machinery with no production consumer yet.</p>
+        </div>
+        <div>
+          <div class="big">4</div>
+          <p data-lang="zh"><b>一个包里有四份互相不知道的"查过期就刷新"代码。</b>单看每份都对，放在一起就是一个要不要合并的问题。</p>
+          <p data-lang="en"><b>Four independent "check staleness → refresh" implementations</b> that share no code, in one package. Individually reasonable; as a set, a consolidation decision.</p>
+        </div>
+        <div>
+          <div class="big">1</div>
+          <p data-lang="zh"><b>同一种写法——<code>setTimeout</code> 回调里再挂 <code>setTimeout</code>——在三个不相干的包里各出现一次</b>：渲染节流、SQLite 租约心跳、WebSocket 保活。只搜 <code>setInterval</code>，一个都搜不到。</p>
+          <p data-lang="en"><b>One loop shape — "a recursive setTimeout that re-arms itself" — living in three unrelated packages</b>: render throttling, a SQLite writer's lease heartbeat, and a WebSocket session pool's keepalive. Grep for <code>setInterval</code> and you miss the entire class.</p>
+        </div>
+      </div>
+      <p style="margin-top:28px" data-lang="zh">最后这条解释了为什么值得建全仓：跨包的模式，只建一个子系统永远看不见。</p>
+      <p style="margin-top:28px" data-lang="en">The last one is the argument for modeling the whole repo rather than one subsystem: cross-cutting patterns only exist at full scale.</p>
+    </div>
+  </section>
+</main>
+
+<!-- ─────────────── DOCS ─────────────── -->
+<main id="docs">
+  <section class="wrap pad-lg">
+    <p class="eyebrow">Docs</p>
+    <h1 data-lang="zh">命令、工作流与边界</h1>
+    <h1 data-lang="en">Commands, workflow, and limits</h1>
+  </section>
+
+  <section class="sec">
+    <div class="wrap" style="padding-top:36px;padding-bottom:36px">
+      <h3 data-lang="zh">命令</h3>
+      <h3 data-lang="en">Commands</h3>
+      <div class="scroll-x">
+        <table class="cmds">
+          <thead>
+            <tr><th>command</th><th>what it does</th><th>fails a PR?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>check</td><td>Deterministic gate: schema, reference integrity, acyclic graph, anchor existence, canonical-writer (AST) invariants — plus cross-node consistency as warnings. <code>--diff</code> for incremental runs.</td><td class="gate">yes</td></tr>
+            <tr><td>conformance</td><td>Model → code report card: per-node met / partial / gap + the missing piece</td><td class="adv">advisory</td></tr>
+            <tr><td>reconcile</td><td>Code → model: extracted signals no model node registered</td><td class="adv">advisory</td></tr>
+            <tr><td>coverage</td><td>Model self-coverage: how much of the model is anchored</td><td class="adv">advisory</td></tr>
+            <tr><td>backtest</td><td>Commit-side backtest: of the last N <code>.ts</code>/<code>.tsx</code>-touching commits, how many touched a model-anchored file</td><td class="adv">advisory</td></tr>
+            <tr><td>overview</td><td>Interactive system map — panorama, journeys, modeling detail, outstanding ledger</td><td class="adv">—</td></tr>
+            <tr><td>graph</td><td>Self-contained, conformance-colored HTML of the whole model</td><td class="adv">—</td></tr>
+            <tr><td>topology</td><td>Component/dependency diagram from declared components + extracted facts</td><td class="adv">—</td></tr>
+            <tr><td>snapshot</td><td>Nightly full scan + drift report</td><td class="adv">never a gate</td></tr>
+            <tr><td>impact &lt;id&gt;</td><td>What a change here would touch</td><td class="adv">—</td></tr>
+            <tr><td>mcp</td><td>stdio MCP server, so an agent can query model slices instead of reading the whole spec</td><td class="adv">—</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec tint">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <p class="eyebrow">Agent workflow</p>
+      <h2 data-lang="zh">agent 怎么用它</h2>
+      <h2 data-lang="en">How a coding agent drives it</h2>
+      <p class="muted" data-lang="zh">不用额外配置。<code>init</code> 已经把指令放进了你的仓库，agent 自己会找到。</p>
+      <p class="muted" data-lang="en">No training needed — <code>init</code> puts the manual inside your repo.</p>
+      <div class="cards" style="--col:270px">
+        <div>
+          <div class="path">.claude/skills/codeontic/SKILL.md</div>
+          <p class="muted" data-lang="zh">Claude Code 自动识别成 <code>/codeontic</code>，按意图分路：发现建模（小仓单 agent；大仓走 <code>loop-discovery-parallel.md</code> 分域并行）、跑门禁、查缺口、出图、查模型。Cursor、Codex 这类能读文件的 agent，读同一份文件照做。</p>
+          <p class="muted" data-lang="en">Claude Code picks it up as <code>/codeontic</code> and routes by intent: discovery (single-agent for small repos; <code>loop-discovery-parallel.md</code> partitions large ones), the gate, gaps, maps, model queries. Cursor, Codex, or any agent that can read a file follows the same instructions.</p>
+        </div>
+        <div>
+          <div class="path">.codeontic/agent/</div>
+          <p class="muted" data-lang="zh">发现建模的四遍扫描法、给 PR 模板加声明栏、按你仓库的惯例配 CI。</p>
+          <p class="muted" data-lang="en">The four-pass discovery method, PR-template setup, CI setup in your repo's own conventions.</p>
+        </div>
+        <div>
+          <div class="path">codeontic mcp</div>
+          <p class="muted" data-lang="zh">起一个 MCP server，agent 按需查模型切片（影响面、场景、证据），不用通读整个模型。</p>
+          <p class="muted" data-lang="en">An MCP server agents query for model slices (impact, scenarios, evidence) instead of reading the whole model.</p>
+        </div>
+      </div>
+      <p style="margin-top:26px" data-lang="zh">分工很清楚：识别行为是 LLM 的事，守住模型的诚实是引擎的事。<b>门禁本身不调 LLM、不联网、不执行你的代码。</b></p>
+      <p style="margin-top:26px" data-lang="en">Finding the behavior worth modeling is an LLM's job; keeping the model honest is the engine's. <b>The gate itself never calls an LLM, touches the network, or runs your code.</b></p>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <p class="eyebrow">What it costs</p>
+      <h2 data-lang="zh">代价，先说清楚</h2>
+      <h2 data-lang="en">Said up front, because this is a filter</h2>
+      <div class="cols" style="--col:260px;margin-top:22px">
+        <div>
+          <h4 data-lang="zh">建模消耗 token</h4>
+          <h4 data-lang="en">Discovery burns tokens</h4>
+          <p class="muted" data-lang="zh">建模由 coding agent 在你的仓库里完成。一个子系统约一次 agent 会话；670 文件的 pi 仓库用了 5 次并行会话加一次人工合并。</p>
+          <p class="muted" data-lang="en">The modeling is done by a coding agent inside your repo. One subsystem (8–15 nodes) is roughly one agent session; ~670 files took 5 parallel sessions plus one human merge pass.</p>
+        </div>
+        <div>
+          <h4 data-lang="zh">模型要进 git</h4>
+          <h4 data-lang="en">The model is committed to your repo</h4>
+          <p class="muted" data-lang="zh"><code>.codeontic/model/</code> 是一堆 YAML，一个节点一个文件，提交、review，跟代码同等对待。生成的报告在 <code>.codeontic/ws/</code>，用完即弃，gitignore 掉。</p>
+          <p class="muted" data-lang="en"><code>.codeontic/model/</code> is file-per-node YAML and an asset — it belongs in git, reviewed like code. <code>.codeontic/ws/</code> holds generated reports and is disposable (gitignored).</p>
+        </div>
+        <div>
+          <h4 data-lang="zh">门禁不花钱</h4>
+          <h4 data-lang="en">The gate costs zero tokens</h4>
+          <p class="muted" data-lang="zh"><code>check</code> 和 <code>conformance</code> 是纯确定性的，亚秒出结果。日常成本只有一项：代码变了，agent 起草模型增量，你确认。</p>
+          <p class="muted" data-lang="en"><code>check</code> and <code>conformance</code> are deterministic and sub-second. The only ongoing cost is keeping the model current: an agent drafts the delta during a PR, a maintainer verifies it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap" style="padding-top:44px;padding-bottom:44px">
+      <p class="eyebrow">FAQ</p>
+      <div class="faq">
+        <div>
+          <div>
+            <h4 data-lang="zh">支持哪些语言？</h4>
+            <h4 data-lang="en">Which languages does it support?</h4>
+            <p class="muted" data-lang="zh">TS/JS 是一等公民：符号级锚点验证、AST 不变量检查都只认 TS/JS 源码。其他语言照样建模，结构检查（schema、引用完整性、无环性、场景）和锚点<b>文件存在性</b>都照常工作；符号级检查会回答"判断不了"——不误报，但也等于没验。</p>
+            <p class="muted" data-lang="en">TypeScript / JavaScript repos are the first-class case. Other languages get the model but not the enforcement: schema, reference integrity, acyclicity, GWT scenarios, the debt baseline and anchor <b>file existence</b> are language-neutral, while symbol-level checks return "cannot tell" — never a false alarm, but never a verification either.</p>
+          </div>
+          <div>
+            <h4 data-lang="zh">前提条件？</h4>
+            <h4 data-lang="en">Any hard prerequisite?</h4>
+            <p class="muted" data-lang="zh">得是 git 仓库。<code>facts</code>、<code>backtest</code>、<code>snapshot</code> 都要调 git。</p>
+            <p class="muted" data-lang="en">A git checkout. <code>facts</code>, <code>backtest</code>, and <code>snapshot</code> all shell out to git.</p>
+          </div>
+          <div>
+            <h4 data-lang="zh"><code>--strict-anchors</code> 严在哪？</h4>
+            <h4 data-lang="en">What exactly does <code>--strict-anchors</code> promote?</h4>
+            <p class="muted" data-lang="zh">只把两种"错就是错"的检查升成 error：锚点写法不合法、绑定的<b>文件</b>不存在。文件还在只是找不到符号——永远只是 warning：它靠全文匹配，正常重构就可能误伤，老误报的门禁最后会被关掉。但 <code>conformance</code> 会用它，锚点失效的节点拿不到 met。<b>门禁宽，成绩单严。</b></p>
+            <p class="muted" data-lang="en">Exactly the two checks that can be wrong with certainty — a malformed anchor, and an anchored <b>file</b> that no longer exists. A file that exists but no longer mentions the symbol stays a warning at any strictness, but <code>conformance</code> consumes it, so a node whose anchors went stale stops scoring met. The gate stays lenient; the report card stays honest.</p>
+          </div>
+        </div>
+        <div>
+          <div>
+            <h4 data-lang="zh">哪些场景<b>不</b>适用？</h4>
+            <h4 data-lang="en">When should you <b>not</b> use it?</h4>
+            <p class="muted" data-lang="zh">codeontic 在"行为看不清、错不起"的地方才值得投入。纯函数库（代码本身就是行为说明）、没有跨组件交接的薄 CRUD、以及即将整体重写的代码，都不值得建模。判断标准很简单：<i>新人光读代码，会不会理解错？</i>不会，就不用建。</p>
+            <p class="muted" data-lang="en">Modeling costs real effort and does not pay off everywhere. It is a poor trade for pure function libraries, thin CRUD or glue with no cross-component handoff, and code you are about to delete or rewrite wholesale. The honest test: <i>would a newcomer get this wrong by reading the code?</i> If no, don't model it.</p>
+          </div>
+          <div>
+            <h4 data-lang="zh">adapter 是什么？需要自己写吗？</h4>
+            <h4 data-lang="en">What's an adapter — do I write one?</h4>
+            <p class="muted" data-lang="zh">包里不内置。你在 <code>.codeontic/adapter/</code> 放一个小抽取器，负责从你的技术栈里提取实现信号（队列名、定时器、轮询等）。加 <code>--strict-adapter</code> 可以让缺失 adapter 直接挡 CI，而不是静默跳过。</p>
+            <p class="muted" data-lang="en">No adapter ships inside the package. Your repo owns a small, synchronous extractor at <code>.codeontic/adapter/</code> that reads your stack's implementation signals (queue names, timers, pollers). Pass <code>--strict-adapter</code> to make a missing adapter a hard CI failure instead of a silent skip.</p>
+          </div>
+          <div>
+            <h4 data-lang="zh">设计原则</h4>
+            <h4 data-lang="en">Design guarantees</h4>
+            <p class="muted" data-lang="zh">门禁不调 LLM、不碰网络、不运行代码——快、便宜、可复现。缓存不影响正确性（冷跑热跑逐字节一致）。快照和漂移报告<b>永远不是</b> PR 门禁。发现与防腐严格分开：LLM 只出草稿，维护者审核后才入库。</p>
+            <p class="muted" data-lang="en">The gate is zero-LLM, zero-network, zero-code-execution. The cache has zero correctness dependence (a cold run and a warm run are byte-for-byte identical). Snapshot / drift reports are never a PR gate. Discovery and anti-corrosion stay separated: the LLM only drafts, a maintainer verifies, and nothing lands without passing anchor verification.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="foot-logo">codeontic</div>
+      <div style="font-size:13px">understand · refactor · never drift</div>
+    </div>
+    <div class="foot-links">
+      <a href="https://github.com/krislavten/codeontic" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="https://www.npmjs.com/package/codeontic" target="_blank" rel="noreferrer">npm</a>
+      <a data-map-link href="examples/pi-overview.html" target="_blank" rel="noreferrer">pi map</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root = document.documentElement;
+  var TITLE = {
+    zh: 'codeontic —— 人审模型，agent 写码',
+    en: 'codeontic — humans review the model, agents write the code'
+  };
+
+  function applyLang(lang){
+    root.lang = lang;
+    document.title = TITLE[lang];
+    var links = document.querySelectorAll('[data-map-link]');
+    for (var i = 0; i < links.length; i++) {
+      links[i].href = 'examples/pi-overview.html?lang=' + lang;
+    }
+  }
+
+  function applyPage(){
+    var p = (location.hash || '').slice(1);
+    root.dataset.page = ['home','concept','showcase','docs'].indexOf(p) >= 0 ? p : 'home';
+  }
+
+  document.addEventListener('click', function(e){
+    var setLang = e.target.closest('[data-setlang]');
+    if (setLang) {
+      var lang = setLang.getAttribute('data-setlang');
+      try { localStorage.setItem('codeontic.site.lang', lang); } catch (err) {}
+      applyLang(lang);
+      return;
+    }
+    var copy = e.target.closest('[data-copy]');
+    if (copy) {
+      try { navigator.clipboard.writeText(copy.getAttribute('data-copy')); } catch (err) {}
+      var prev = copy.textContent;
+      copy.textContent = root.lang === 'en' ? 'copied ✓' : '已复制 ✓';
+      setTimeout(function(){ copy.textContent = prev; }, 1400);
+    }
+  });
+
+  window.addEventListener('hashchange', function(){ applyPage(); window.scrollTo(0, 0); });
+
+  applyLang(root.lang === 'en' ? 'en' : 'zh');
+})();
+</script>
+</body>
+</html>
