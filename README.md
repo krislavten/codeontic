@@ -9,117 +9,41 @@
 
 ---
 
-## Your system's skeleton, made explicit
+## The question this started from
 
-A system's real behavior — queue consumers, timers, retry chains, state machines, and the one-shot paths a CLI or pipeline runs end to end — is scattered across the code, and nothing states end to end what it is supposed to do or proves it still does. codeontic makes that shape an explicit, authoritative **model**: a closed vocabulary (loops, flows, junctions, scenarios, debts) that writes down how the system is *supposed* to run, anchored to real code symbols so the claims can be evidenced and enforced. Code becomes a **projection** of that skeleton — which flips three things:
+At a deploy review, an ops engineer asked about a service an agent had written most of: **"do you still have control over this code?"**
 
-- **Understand it.** The skeleton is legible where a pile of code isn't — people and agents read the map instead of reverse-engineering it every time.
-- **Refactor without fear.** Because code only projects the skeleton, you can rewrite or regenerate it freely; `conformance` proves the rewrite still honors the shape. The skeleton is stable; the code is fluid — even disposable.
-- **Never drift.** Every PR checks the projection against the skeleton; every gap is a debt the code owes the model.
+The honest answer was no — not in the sense they meant. Nobody had read every line, and nobody was going to.
 
-**Why this matters now.** When agents write the code, nobody reads it line by line any more, and a person's picture of the system rots faster than it ever did. The skeleton is how you keep the part worth keeping: knowing what machinery runs on its own, how the logic flows between it, and where nothing is guarding — which is what it takes to name an architectural problem and decide what to spend on. The findings a first modeling pass shakes out are the proof, not the product; the lasting value is a map that stays current, PR by PR, so your judgment doesn't quietly go stale. The end state: **people review the model, agents write the code.**
+The wrong fix is to go back. Writing it by hand is slower, that gap is widening, and agents writing the code is a one-way door — this project takes that as settled and does not argue it. So "control" has to mean something else: not *someone has read all of it*, but **the system's intended behavior is written down somewhere a machine can hold the code to.**
 
-## How it works
+## Why reading more code is not the fix
 
-The model is **structured** — Loops, Flows, Junctions, Scenarios — written as YAML, one node per file, and bound to reality in three places:
+A real repo is hundreds of files and hundreds of thousands of lines. A person cannot read it all. An agent cannot either — it does not fit in the context window, retrieval returns fragments, and a fragment is enough to produce an answer that sounds right and is wrong. "Just read the codebase" is not an option for either of you.
 
-1. a behavior is **pinned to a real code symbol** (`anchors: path#symbol`);
-2. it is **written down as a GWT scenario** (given / when / then, in business language);
-3. the scenario **points at a real test** (`verified_by` — a symbol anchor, or `{file, text}` when the test's title is a sentence with spaces).
+And the question that matters is not whether one file is correct. It is: **what machinery in here runs on its own? How does a request get from A to B? Where is nothing guarding?** Those answers live in no single file — which is why nobody can look them up, and why everyone's mental picture of the system rots.
 
-A deterministic gate checks all three on every pull request, and [`codeontic conformance`](#commands) grades every modeled behavior `met` / `partial` / `gap`, naming the exact missing piece. The engine verifies that these things *exist* and *point where they claim* — it does not judge whether a test truly asserts its scenario. That limit is deliberate: proving it would mean running your code, and the gate never does.
+## The move: a layer above the code
 
-<p align="center">
-  <img src="docs/assets/report-card.svg" width="100%" alt="A conformance report card: each modeled behavior graded met, partial, or gap with the missing piece named, plus an 8-met / 3-partial / 1-gap summary bar.">
-</p>
+Nobody controls a modern system by reading its machine code. We put a language above it and let a compiler keep the two in step. Do it once more, one level up: put a **behavioral model** above the source that states how the system is supposed to run, and let a deterministic checker keep the code honest to it.
 
-## Where the idea comes from
+That layer is not documentation — documentation has no way to be wrong out loud. It is a structured model, bound to real code symbols, checked on every pull request.
 
-The design borrows from **ontology** — the old practice of describing a domain as a fixed set of concepts and relations a machine can work with. codeontic's five node kinds — loop, flow, junction, scenario, debt — are a small ontology purpose-built for system behavior.
-
-With the direction reversed. A classical ontology is induced from reality, and reality is always right. This model is **normative**: write down how the system is supposed to run, then hold the code to it. An induced graph can only describe the present; a normative model can judge it — the next sections are about how.
-
-## Why it's different from a code graph
-
-<p align="center">
-  <img src="docs/assets/directions.svg" width="100%" alt="Three directions between the model and the code: conformance (model to code, graded), reconcile (code to model), and coverage (the model's own anchoring). Code aligns to the model, never the reverse.">
-</p>
-
-A descriptive code-graph derives itself *from* the code, so it can never tell you the code is wrong — it only tells you what the code is. codeontic keeps an independent source of truth and checks it three ways, and the direction never reverses:
-
-- **`reconcile`** — code → model: signals the code has that the model forgot to register (a queue, a timer, a poller).
-- **`coverage`** — the model's own self-check: how much of the model is actually bound to code.
-- **`conformance`** — model → code: the report card, grading each node and naming its gap.
-
-Because the model is authoritative, **every gap is a debt the implementation owes the model** — which is exactly the drift a from-the-code graph structurally cannot see.
-
-## A real map
-
-[earendil-works/pi](https://github.com/earendil-works/pi) is a public agent-harness monorepo: 10 packages, ~670 TypeScript source files. Here is the whole repo modeled.
-
-| | |
-| --- | --- |
-| model | 30 loops · 19 flows · 7 junctions · 4 debts · 51 scenarios |
-| built by | 5 parallel agent sessions, then one human pass to merge and adjudicate |
-| gate | `check --strict-anchors` → exit 0, zero warnings |
-| coverage | 52 code files anchored; 13 of the last 26 commits touched one of them (50%) |
-| conformance | 43 met · 7 partial · 2 gap |
-
-<p align="center">
-  <img src="docs/assets/showcase-pi.png" width="100%" alt="The pi system map: end-to-end journeys on the left, colored by conformance status, and one journey opened on the right — what it does, the loops it is composed of in execution order, its test coverage, and the junctions it crosses.">
-</p>
-
-**[Open the full interactive map](https://krislavten.github.io/codeontic/examples/pi-overview.html)** — every flow and loop opens into a drawer, and code links point at pi's real files at `666d897`. It is one self-contained HTML file, committed at [`docs/examples/pi-overview.html`](docs/examples/pi-overview.html), so it also works offline after a download. Generated by codeontic 0.10.0.
-
-pi is healthy and actively developed — every large codebase carries a ledger like this one. The point is that the map put it where a person could see it:
-
-- **Three implementations that are complete but not wired up** — finished machinery with no production consumer yet.
-- **Four independent "check staleness → refresh" implementations** that share no code, in one package. Individually reasonable; as a set, a consolidation decision.
-- **One loop *shape* — "a recursive `setTimeout` that re-arms itself" — living in three unrelated packages**: render throttling, a SQLite writer's lease heartbeat, and a WebSocket session pool's keepalive. Grep for `setInterval` and you miss the entire class.
-
-The last one is the argument for modeling the whole repo rather than one subsystem: cross-cutting patterns only exist at full scale. Method and evidence: [Proposal 016](docs/proposals/016-three-layer-adoption-plan.md).
-
-## Quick start
-
-```bash
-npx codeontic init          # model skeleton + agent kit + /codeontic skill front door
-npx codeontic check . --repo-root . --strict-anchors   # deterministic gate (sub-second, zero-LLM)
-npx codeontic conformance . --repo-root .              # met / partial / gap report card
-npx codeontic graph . --repo-root .                    # self-contained conformance-colored HTML
-```
-
-`init` writes a `.codeontic/` skeleton and an **agent kit**: instructions a coding agent in your repo follows to discover behavior and draft the model. You review the drafts; nothing lands unverified.
-
-### Commands
-
-| command | what it does | fails a PR? |
-| --- | --- | --- |
-| `check` | Deterministic gate: schema, reference integrity, acyclic graph, anchor existence, canonical-writer (AST) invariants — plus cross-node consistency as warnings (two nodes claiming one symbol, dangling ids in free text). `--diff` for incremental runs. | **yes** — the only one |
-| `conformance` | Model → code report card: per-node `met` / `partial` / `gap` + the missing piece | advisory |
-| `reconcile` | Code → model: extracted signals no model node registered | advisory |
-| `coverage` | Model self-coverage: how much of the model is anchored | advisory |
-| `backtest` | Commit-side backtest: of the last N `.ts`/`.tsx`-touching commits, how many touched a model-anchored file | advisory |
-| `graph` | Self-contained, conformance-colored HTML of the whole model | — |
-| `overview` | Interactive system map — click any loop for plain-language detail | — |
-| `snapshot` | Nightly full scan + drift report | never a gate |
-| `impact <id>` | What a change here would touch | — |
-| `mcp` | stdio MCP server, so an agent can query model slices instead of reading the whole spec | — |
-
-`--strict-anchors` promotes exactly the two checks that can be wrong with certainty — a malformed anchor, and an anchored **file** that no longer exists. A file that exists but no longer mentions the symbol stays a warning at any strictness (that check is whole-file text matching, not an AST, and a gate that cries wolf gets muted) — but `conformance` consumes it, so a node whose anchors went stale stops scoring `met`. The gate stays lenient; the report card stays honest.
-
-## How a coding agent drives it
-
-No training needed — `init` puts the manual inside your repo:
-
-- **`.claude/skills/codeontic/SKILL.md`** — Claude Code picks it up as `/codeontic` and routes by intent: discovery (single-agent for small repos; `.codeontic/agent/loop-discovery-parallel.md` partitions large ones), the gate, gaps, maps, model queries. Cursor, Codex, or any agent that can read a file follows the same instructions.
-- **`.codeontic/agent/`** — the four-pass discovery method, PR-template setup, CI setup in your repo's own conventions.
-- **`codeontic mcp`** — an MCP server agents query for model slices (impact, scenarios, evidence) instead of reading the whole model.
-
-## What the model looks like
+## What gets modeled
 
 <p align="center">
   <img src="docs/assets/graph.svg" width="100%" alt="A small behavioral graph: loop and junction nodes colored by conformance status (met, partial, gap), with one loop node anchored by a dashed line to a real code symbol.">
 </p>
+
+A closed vocabulary of five node kinds, written as YAML, one node per file:
+
+| | |
+| --- | --- |
+| **loop** | machinery that advances itself: state machines, pollers, retry chains, render loops |
+| **flow** | an end-to-end journey — either composed of loops in execution order, or pinned straight to code (a CLI path, a one-shot pipeline) |
+| **junction** | where two of them hand off — the seam things break at, graded on its own |
+| **scenario** | one behavior in business language (given / when / then), pointing at a real test |
+| **debt** | something that looks like behavior but was disqualified — a dead state machine, a declared-but-unbuilt capability |
 
 ```yaml
 # .codeontic/model/loops/*.yaml — one background control loop (fictional example)
@@ -145,9 +69,111 @@ A repo with no background loops at all — a CLI, a build tool, a one-shot pipel
   scenarios: [GWT-C1-001]
 ```
 
-## Discovery by LLM, anti-corrosion by the engine
+**Where the idea comes from.** The design borrows from **ontology** — the old practice of describing a domain as a fixed set of concepts and relations a machine can work with. These five kinds are a small ontology purpose-built for system behavior, with the direction reversed: a classical ontology is induced from reality, and reality is always right. This model is **normative** — write down how the system is supposed to run, then hold the code to it. An induced graph can only describe the present; a normative model can judge it.
 
-Finding the behavior worth modeling is an LLM's job; keeping the model honest is the engine's. The agent kit ships a four-pass discovery method (recall two candidate classes — self-advancing loops and one-shot execution paths → falsify with three criteria → compose → trace to raise dimension) for a coding agent to run offline. The engine only ever verifies anchors and blocks drift — **the gate itself never calls an LLM, touches the network, or runs your code.**
+## The model is the truth; the code is a projection
+
+This is the part that flips the usual order. The model is authoritative. Code is what currently projects it — and a projection can be rewritten, regenerated, or thrown away as long as the skeleton it projects stays intact. Which is exactly the property you want in a repo where agents do the writing.
+
+So when the two disagree, the verdict is not "the model is out of date." It is **a debt the implementation owes the model** — the same direction of judgment a compiler has over the assembly it emits.
+
+<p align="center">
+  <img src="docs/assets/directions.svg" width="100%" alt="Three directions between the model and the code: conformance (model to code, graded), reconcile (code to model), and coverage (the model's own anchoring). Code aligns to the model, never the reverse.">
+</p>
+
+A descriptive **code graph** derives itself *from* the code, so it can never tell you the code is wrong — it only tells you what the code is. codeontic keeps an independent source of truth and checks it three ways, and the direction never reverses:
+
+- **`conformance`** — model → code: the report card, grading each node and naming its gap.
+- **`reconcile`** — code → model: signals the code has that the model forgot to register (a queue, a timer, a poller).
+- **`coverage`** — the model's own self-check: how much of the model is actually bound to code.
+
+## How the model is kept honest
+
+A claim in the model is bound to reality in three places, and a deterministic gate checks all three on every pull request:
+
+1. the behavior is **pinned to a real code symbol** (`anchors: path#symbol`);
+2. it is **written down as a GWT scenario** (given / when / then, in business language);
+3. the scenario **points at a real test** (`verified_by` — a symbol anchor, or `{file, text}` when the test's title is a sentence with spaces).
+
+That is also how the model reports on your **tests** rather than just your code. It is a structural audit, not a semantic one: every modeled behavior — including each junction, where two components hand off — either has a scenario pointing at a test that exists, or it is named as a gap. On a real repo that surfaces the behaviors nobody wrote a scenario for and the scenarios whose test file no longer exists, which is the part a coverage percentage cannot see.
+
+The engine verifies that these things *exist* and *point where they claim*. It does **not** judge whether a test truly asserts its scenario — proving that would mean running your code, and the gate never does. The line is deliberate, and the page says so wherever it reports a number.
+
+<p align="center">
+  <img src="docs/assets/report-card.svg" width="100%" alt="A conformance report card: each modeled behavior graded met, partial, or gap with the missing piece named, plus an 8-met / 3-partial / 1-gap summary bar.">
+</p>
+
+## What you get out of it
+
+- **Refactor often, at low stakes.** Because code only projects the skeleton, you can rewrite or regenerate it freely; `conformance` proves the rewrite still honors the shape. The skeleton is stable; the code is fluid — even disposable.
+- **A basis for architecture decisions.** Four independent implementations of one idea, machinery with no production consumer, one loop shape repeated across three packages — those are decisions, and they only become visible when the whole system is on one page.
+- **An agent can look things up instead of guessing.** `codeontic mcp` serves model slices (impact, scenarios, evidence) so an agent answers from the model rather than from whatever the retriever happened to return.
+- **Every PR checks the alignment.** The gate is sub-second and calls no model, so it costs nothing to run on every change — and drift gets caught in the PR that caused it, not two quarters later.
+
+## A real map
+
+[earendil-works/pi](https://github.com/earendil-works/pi) is a public agent-harness monorepo: 10 packages, ~670 TypeScript source files. Here is the whole repo modeled.
+
+| | |
+| --- | --- |
+| model | 30 loops · 19 flows · 7 junctions · 4 debts · 51 scenarios |
+| built by | 5 parallel agent sessions, then one human pass to merge and adjudicate |
+| gate | `check --strict-anchors` → exit 0, zero warnings |
+| coverage | 52 code files anchored; 13 of the last 26 commits touched one of them (50%) |
+| conformance | 43 met · 7 partial · 2 gap |
+
+<p align="center">
+  <img src="docs/assets/showcase-pi.png" width="100%" alt="The pi system map: end-to-end journeys on the left, colored by conformance status, and one journey opened on the right — what it does, the loops it is composed of in execution order, its test coverage, and the junctions it crosses.">
+</p>
+
+**[Open the full interactive map](https://krislavten.github.io/codeontic/examples/pi-overview.html)** — it opens on one panorama of every modeled node grouped by package, then the journeys, the modeling detail, and the outstanding ledger last. Every node opens into a drawer, and code links point at pi's real files at `666d897`. It is one self-contained HTML file, committed at [`docs/examples/pi-overview.html`](docs/examples/pi-overview.html), so it also works offline after a download.
+
+pi is healthy and actively developed — every large codebase carries a ledger like this one. The point is that the map put it where a person could see it:
+
+- **Three implementations that are complete but not wired up** — finished machinery with no production consumer yet.
+- **Four independent "check staleness → refresh" implementations** that share no code, in one package. Individually reasonable; as a set, a consolidation decision.
+- **One loop *shape* — "a recursive `setTimeout` that re-arms itself" — living in three unrelated packages**: render throttling, a SQLite writer's lease heartbeat, and a WebSocket session pool's keepalive. Grep for `setInterval` and you miss the entire class.
+
+The last one is the argument for modeling the whole repo rather than one subsystem: cross-cutting patterns only exist at full scale. Method and evidence: [Proposal 016](docs/proposals/016-three-layer-adoption-plan.md).
+
+## Quick start
+
+```bash
+npx codeontic init          # model skeleton + agent kit + /codeontic skill front door
+npx codeontic check . --repo-root . --strict-anchors   # deterministic gate (sub-second, zero-LLM)
+npx codeontic conformance . --repo-root .              # met / partial / gap report card
+npx codeontic overview . --repo-root .                 # the interactive system map above
+```
+
+`init` writes a `.codeontic/` skeleton and an **agent kit**: instructions a coding agent in your repo follows to discover behavior and draft the model. You review the drafts; nothing lands unverified.
+
+### Commands
+
+| command | what it does | fails a PR? |
+| --- | --- | --- |
+| `check` | Deterministic gate: schema, reference integrity, acyclic graph, anchor existence, canonical-writer (AST) invariants — plus cross-node consistency as warnings (two nodes claiming one symbol, dangling ids in free text). `--diff` for incremental runs. | **yes** — the only one |
+| `conformance` | Model → code report card: per-node `met` / `partial` / `gap` + the missing piece | advisory |
+| `reconcile` | Code → model: extracted signals no model node registered | advisory |
+| `coverage` | Model self-coverage: how much of the model is anchored | advisory |
+| `backtest` | Commit-side backtest: of the last N `.ts`/`.tsx`-touching commits, how many touched a model-anchored file | advisory |
+| `overview` | Interactive system map — panorama, journeys, modeling detail, outstanding ledger | — |
+| `graph` | Self-contained, conformance-colored HTML of the whole model | — |
+| `topology` | Component/dependency diagram from declared components + extracted facts | — |
+| `snapshot` | Nightly full scan + drift report | never a gate |
+| `impact <id>` | What a change here would touch | — |
+| `mcp` | stdio MCP server, so an agent can query model slices instead of reading the whole spec | — |
+
+`--strict-anchors` promotes exactly the two checks that can be wrong with certainty — a malformed anchor, and an anchored **file** that no longer exists. A file that exists but no longer mentions the symbol stays a warning at any strictness (that check is whole-file text matching, not an AST, and a gate that cries wolf gets muted) — but `conformance` consumes it, so a node whose anchors went stale stops scoring `met`. The gate stays lenient; the report card stays honest.
+
+## How a coding agent drives it
+
+No training needed — `init` puts the manual inside your repo:
+
+- **`.claude/skills/codeontic/SKILL.md`** — Claude Code picks it up as `/codeontic` and routes by intent: discovery (single-agent for small repos; `.codeontic/agent/loop-discovery-parallel.md` partitions large ones), the gate, gaps, maps, model queries. Cursor, Codex, or any agent that can read a file follows the same instructions.
+- **`.codeontic/agent/`** — the four-pass discovery method, PR-template setup, CI setup in your repo's own conventions.
+- **`codeontic mcp`** — an MCP server agents query for model slices (impact, scenarios, evidence) instead of reading the whole model.
+
+Finding the behavior worth modeling is an LLM's job; keeping the model honest is the engine's. **The gate itself never calls an LLM, touches the network, or runs your code.**
 
 ### What it costs
 
@@ -181,6 +207,16 @@ Said up front, because this is a filter, not a sales pitch:
 ## Adapters — open infrastructure
 
 No adapter ships inside the package. Your repo owns a small, synchronous extractor at `.codeontic/adapter/` that reads *your* stack's implementation signals (queue names, timers, pollers). Pass `--strict-adapter` to make a missing adapter a hard CI failure instead of a silent skip, and let `init`'s generated CI pin the codeontic version rather than floating on `@latest` — so a future release can't quietly change gate semantics under a green build.
+
+## Where the project is
+
+**Early.** The engine, the gate and the maps are real and used daily on real repos — the pi map above is generated output, not a mockup — but this is a young project and the surface is still moving.
+
+- **TypeScript / JavaScript is the supported case today**; other languages get the model and the structural gate, with the degradations named above.
+- **Try it on a subsystem first**, not the whole repo: one agent session, 8–15 nodes, and you will know within an hour whether the map tells you something you did not already know.
+- **Issues and reports are welcome** — especially "the model could not express X" and "the gate flagged something that was fine." Both are the kind of feedback that shapes what ships next.
+
+The end state this is aimed at: **people review the model, agents write the code.**
 
 ## Contributing
 

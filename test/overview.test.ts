@@ -6,7 +6,15 @@ import { run } from "../src/cli/run.js";
 import { buildGraph } from "../src/loader/model-graph.js";
 import { computeConformance } from "../src/query/conformance.js";
 import type { DebtEntry, Flow, Junction, Loop, Scenario } from "../src/schema/index.js";
-import { computeOverviewModel, renderOverviewHtml, repoLinks } from "../src/views/overview-html.js";
+import {
+  OVERVIEW_I18N,
+  computeArchitecture,
+  computeOverviewModel,
+  moduleKeyOf,
+  renderOverviewHtml,
+  repoLinks,
+  textWidth,
+} from "../src/views/overview-html.js";
 import type { OverviewMeta } from "../src/views/overview-html.js";
 import { seedSyntheticModel } from "./support/seed-synthetic-model.js";
 
@@ -523,9 +531,11 @@ describe("renderOverviewHtml — self-contained & safe", () => {
     // contains step/guard chips with their own click targets
     expect(html).toContain('<button class="fhead" data-flow="');
     expect(html).toContain("function showFlow(id)");
-    // loop is matched FIRST: a step chip lives inside the flow drawer
-    expect(html).toContain('e.target.closest(".chip[data-loop]")');
-    expect(html).toContain('e.target.closest("[data-flow]")');
+    // loop is matched FIRST: a step chip lives inside the flow drawer. The
+    // selector is NOT scoped to .chip — the panorama's SVG nodes carry the same
+    // attributes and must open the same drawers.
+    expect(html).toContain('var b=t.closest("[data-loop]")');
+    expect(html).toContain('var g=t.closest("[data-flow]")');
     // steps render as loop chips, so each step opens that loop's own drawer
     expect(html).toContain('class="dsteps"');
     // the two blocks are SHARED with the loop drawer, not re-implemented
@@ -702,5 +712,399 @@ describe("runOverview / CLI — against the synthetic seed model", () => {
     } finally {
       await rm(empty, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The panorama (§ views/overview-html.ts, `computeArchitecture`). Geometry is
+ * asserted only where it carries meaning — grouping, edges, ordering — never
+ * pixel values, which would make every visual tweak a test edit.
+ */
+describe("computeArchitecture — the panorama", () => {
+  const build = (entries: Parameters<typeof buildGraph>[0]) => {
+    const { graph } = buildGraph(entries);
+    return computeArchitecture(computeOverviewModel(graph, computeConformance(graph, {})));
+  };
+
+  it("normalizes an owner down to its base package", () => {
+    expect(moduleKeyOf("packages/a (仅退役窗口)")).toBe("packages/a");
+    expect(moduleKeyOf("packages/a (X 触发), packages/b (Y 生成)")).toBe("packages/a");
+    expect(moduleKeyOf(null)).toBe("");
+  });
+
+  it("groups every node into its module box and strips the shared path prefix", () => {
+    const a = build([
+      { file: "a", node: loop({ id: "L1", owner: "packages/alpha" }) },
+      { file: "b", node: loop({ id: "L2", owner: "packages/alpha (子系统)" }) },
+      { file: "c", node: loop({ id: "L3", owner: "packages/beta" }) },
+    ]);
+    expect(a.prefix).toBe("packages/");
+    expect(a.modules.map((m) => m.label)).toEqual(["alpha", "beta"]);
+    // the full key survives for the tooltip; only the label is shortened
+    expect(a.modules[0]?.key).toBe("packages/alpha");
+    expect(a.modules[0]?.loops).toBe(2);
+    expect(a.nodes.map((n) => n.id).sort()).toEqual(["L1", "L2", "L3"]);
+  });
+
+  /**
+   * A flow carries no owner, so a package that holds only entrances would be
+   * invisible without the anchor-path fallback — pi has two such packages
+   * (client, evals) and they were missing from the first cut of this picture.
+   */
+  it("places a flow by its own anchor path, so a flows-only package still gets a box", () => {
+    const a = build([
+      { file: "a", node: loop({ id: "L1", owner: "packages/alpha" }) },
+      { file: "b", node: flow({ id: "C1", anchors: ["packages/client/src/x.ts#f"] }) },
+    ]);
+    expect(a.modules.map((m) => m.label).sort()).toEqual(["alpha", "client"]);
+    const c1 = a.nodes.find((n) => n.id === "C1");
+    expect(c1?.kind).toBe("flow");
+  });
+
+  it("falls back to the loops it traverses when a composed flow has no anchors", () => {
+    const a = build([
+      { file: "a", node: loop({ id: "L1", owner: "packages/alpha" }) },
+      { file: "b", node: flow({ id: "C1", traverses: ["L1"] }) },
+    ]);
+    expect(a.modules).toHaveLength(1);
+    expect(a.modules[0]?.flows).toBe(1);
+    // and the hover link is recorded, which is how the picture shows a journey
+    expect(a.nodes.find((n) => n.id === "C1")?.links).toEqual(["L1"]);
+  });
+
+  it("draws one edge per junction however many nodes carry it, and marks the cross-module one", () => {
+    const a = build([
+      { file: "a", node: loop({ id: "L1", owner: "packages/alpha" }) },
+      { file: "b", node: loop({ id: "L2", owner: "packages/alpha" }) },
+      { file: "c", node: loop({ id: "L3", owner: "packages/beta" }) },
+      { file: "d", node: junction({ id: "J-in", between: ["L1", "L2"] }) },
+      { file: "e", node: junction({ id: "J-out", between: ["L2", "L3"] }) },
+    ]);
+    // both endpoints carry each junction; it must still be ONE line each
+    expect(a.edges.map((e) => e.id)).toEqual(["J-in", "J-out"]);
+    expect(a.edges.find((e) => e.id === "J-in")?.cross).toBe(false);
+    expect(a.edges.find((e) => e.id === "J-out")?.cross).toBe(true);
+    expect(a.droppedEdges).toBe(0);
+  });
+
+  it("counts a junction pointing at a node that isn't on the map rather than dropping it silently", () => {
+    const a = build([
+      { file: "a", node: loop({ id: "L1" }) },
+      { file: "b", node: junction({ id: "J-dangling", between: ["L1", "GHOST"] }) },
+    ]);
+    expect(a.edges).toHaveLength(0);
+    expect(a.droppedEdges).toBe(1);
+  });
+
+  it("orders coupled modules next to each other", () => {
+    // `big` is largest so it anchors the row; `far` is bigger than `near` but
+    // `near` is coupled to `big`, so affinity must pull it in first.
+    const a = build([
+      { file: "a", node: loop({ id: "L1", owner: "packages/big" }) },
+      { file: "b", node: loop({ id: "L2", owner: "packages/big" }) },
+      { file: "c", node: loop({ id: "L3", owner: "packages/big" }) },
+      { file: "d", node: loop({ id: "L4", owner: "packages/far" }) },
+      { file: "e", node: loop({ id: "L5", owner: "packages/far" }) },
+      { file: "f", node: loop({ id: "L6", owner: "packages/near" }) },
+      { file: "g", node: junction({ id: "J", between: ["L1", "L6"] }) },
+    ]);
+    expect(a.modules.map((m) => m.label)).toEqual(["big", "near", "far"]);
+  });
+
+  it("keeps unplaceable nodes in a bucket of their own, always last", () => {
+    const a = build([
+      { file: "a", node: loop({ id: "L1", owner: "packages/alpha" }) },
+      { file: "b", node: flow({ id: "C1" }) },
+    ]);
+    expect(a.modules.map((m) => m.label)).toEqual(["packages/alpha", "（未归属）"]);
+    // a single real module means no shared prefix to strip
+    expect(a.prefix).toBe("");
+  });
+
+  it("is deterministic — same model in, identical geometry out", () => {
+    const entries: Parameters<typeof buildGraph>[0] = [
+      { file: "a", node: loop({ id: "L1", owner: "packages/alpha" }) },
+      { file: "b", node: loop({ id: "L2", owner: "packages/beta" }) },
+      { file: "c", node: junction({ id: "J", between: ["L1", "L2"] }) },
+    ];
+    expect(JSON.stringify(build(entries))).toBe(JSON.stringify(build(entries)));
+  });
+});
+
+describe("renderOverviewHtml — page order and the new sections", () => {
+  function sample() {
+    const { graph } = buildGraph([
+      { file: "a", node: flow({ id: "C1", traverses: ["L1"] }) },
+      { file: "b", node: loop({ id: "L1", anchors: ["src/a.ts#A"], scenarios: ["GWT-1"] }) },
+      { file: "c", node: loop({ id: "L2", owner: "packages/other", consumes_queues: ["jobs"] }) },
+      { file: "d", node: junction({ id: "J", between: ["L1", "L2"] }) },
+      { file: "e", node: scenario({ id: "GWT-1" }) },
+      { file: "f", node: debt({ id: "DEBT-1", subject: "x".repeat(400) }) },
+    ]);
+    return computeOverviewModel(graph, computeConformance(graph, {}));
+  }
+
+  /**
+   * Whole first, parts second, receipts last. The ledger used to open the page
+   * and, on a real model, buried the map under 500-character debt prose.
+   */
+  it("opens with the panorama and closes with the ledger", () => {
+    const html = renderOverviewHtml(sample(), META);
+    const arch = html.indexOf('id="archHead"');
+    const flows = html.indexOf('id="flowsHead"');
+    const detail = html.indexOf('id="detailHead"');
+    const ledger = html.indexOf('id="findHead"');
+    expect(arch).toBeGreaterThan(-1);
+    expect(arch).toBeLessThan(flows);
+    expect(flows).toBeLessThan(detail);
+    expect(detail).toBeLessThan(ledger);
+    expect(html).toContain("① 系统全景");
+    expect(html).toContain("⑤ 欠账");
+  });
+
+  it("ships the panorama geometry in the island and renders it as inline SVG", () => {
+    const html = renderOverviewHtml(sample(), META);
+    const m = html.match(/<script id="data" type="application\/json">([\s\S]*?)<\/script>/);
+    const p = JSON.parse((m?.[1] ?? "").replace(/\\u003c/g, "<"));
+    expect(p.arch.modules.length).toBeGreaterThan(0);
+    expect(p.arch.nodes.length).toBe(3);
+    expect(html).toContain('<svg class="arch"');
+    // entrance vs loop is a SHAPE difference, and hovering an entrance lights
+    // the loops it walks
+    expect(html).toContain('rx="'); // node corner radius is kind-dependent
+    expect(html).toContain(".an[data-hl]");
+  });
+
+  it("gives junctions, scenario coverage and queues a place of their own", () => {
+    const html = renderOverviewHtml(sample(), META);
+    expect(html).toContain("④ 建模细节");
+    expect(html).toContain("交接点 · ");
+    expect(html).toContain("场景与测试覆盖");
+    expect(html).toContain("一个场景都没有的节点");
+    expect(html).toContain("队列与消费关系");
+    // the honesty line the engine's whole contract rests on
+    expect(html).toContain("它不判断这个测试是否真的测到了场景说的事");
+  });
+
+  it("clamps a long debt body behind an expander that states its real length", () => {
+    const html = renderOverviewHtml(sample(), META);
+    expect(html).toContain('<span class="clamp">');
+    expect(html).toContain("展开全文（");
+    expect(html).toContain("data-shut=");
+    expect(html).toContain("collapse");
+  });
+});
+
+/**
+ * Two defects a review pass surfaced on the first cut of the panorama. Both
+ * are the same failure mode — the page stating something in words that its own
+ * data does not support — which is the one thing this whole engine exists to
+ * prevent, so each gets a test of its own.
+ */
+describe("panorama + coverage — statements the page must be able to back", () => {
+  it("does not call a legal ONE-SIDED junction a dangling reference", () => {
+    // `Junction.between` is `.min(1)` — a one-sided junction is a valid model.
+    // It has no segment to draw, but the page used to count it as "its id does
+    // not exist in the model", which is simply false.
+    const { graph } = buildGraph([
+      { file: "a", node: loop({ id: "L1" }) },
+      { file: "b", node: junction({ id: "J-solo", between: ["L1"] }) },
+    ]);
+    const a = computeArchitecture(computeOverviewModel(graph, computeConformance(graph, {})));
+    expect(a.edges).toHaveLength(0);
+    expect(a.droppedEdges).toBe(0);
+  });
+
+  it("still reports a MULTI-sided junction whose other endpoint is missing", () => {
+    const { graph } = buildGraph([
+      { file: "a", node: loop({ id: "L1" }) },
+      { file: "b", node: junction({ id: "J-half", between: ["L1", "GHOST"] }) },
+    ]);
+    const a = computeArchitecture(computeOverviewModel(graph, computeConformance(graph, {})));
+    expect(a.droppedEdges).toBe(1);
+  });
+
+  it("keeps a dead test binding out of the bound-to-a-real-test count", () => {
+    const html = renderOverviewHtml(
+      computeOverviewModel(
+        buildGraph([{ file: "a", node: loop({ id: "L1" }) }]).graph,
+        computeConformance(buildGraph([{ file: "a", node: loop({ id: "L1" }) }]).graph, {}),
+      ),
+      META,
+    );
+    // a scenario whose test file resolved to `ok:false` is counted as broken,
+    // never as tested — otherwise the dead binding sits inside the greenest
+    // number on the card
+    expect(html).toContain(
+      "if(bad) scn.broken++; else if(unk) scn.unchecked++; else scn.tested++;",
+    );
+    expect(html).toContain("绑到了真实存在的测试");
+    expect(html).toContain("绑了测试、文件已不在");
+  });
+
+  it("states the scope of the scenario tally instead of implying it covers the model", () => {
+    const html = renderOverviewHtml(
+      computeOverviewModel(
+        buildGraph([{ file: "a", node: loop({ id: "L1" }) }]).graph,
+        computeConformance(buildGraph([{ file: "a", node: loop({ id: "L1" }) }]).graph, {}),
+      ),
+      META,
+    );
+    // junctions carry scenarios too and are NOT in this tally; say so
+    expect(html).toContain("交接点也能带场景，这里没有计入");
+    expect(html).toContain("（loop 和链路上的）");
+  });
+});
+
+describe("renderOverviewHtml — bilingual page", () => {
+  /** Every leaf path in a nested dictionary, e.g. `drawer.gwtGiven`. */
+  function keyPaths(value: unknown, prefix = ""): string[] {
+    if (value === null || typeof value !== "object") return [prefix];
+    return Object.entries(value as Record<string, unknown>).flatMap(([k, v]) =>
+      keyPaths(v, prefix ? `${prefix}.${k}` : k),
+    );
+  }
+  function leafValues(value: unknown): string[] {
+    if (typeof value === "string") return [value];
+    if (value === null || typeof value !== "object") return [];
+    return Object.values(value as Record<string, unknown>).flatMap(leafValues);
+  }
+  // CJK ideographs plus the fullwidth punctuation that comes with them.
+  // Deliberately NOT /g: a global regex carries lastIndex across .test() calls
+  // and would start skipping matches halfway down the dictionary.
+  const CJK = /[　-〿一-鿿！-｠]/;
+
+  function sample() {
+    const { graph } = buildGraph([
+      { file: "a", node: flow({ id: "C1", traverses: ["L1"] }) },
+      { file: "b", node: loop({ id: "L1", anchors: ["src/a.ts#A"], scenarios: ["GWT-1"] }) },
+      { file: "c", node: loop({ id: "L2", owner: "packages/other", consumes_queues: ["jobs"] }) },
+      { file: "d", node: junction({ id: "J", between: ["L1", "L2"] }) },
+      { file: "e", node: scenario({ id: "GWT-1" }) },
+      { file: "f", node: debt({ id: "DEBT-1", subject: "x".repeat(400) }) },
+    ]);
+    return computeOverviewModel(graph, computeConformance(graph, {}));
+  }
+
+  /**
+   * The compiler already rejects a MISSING English key (`EN: typeof ZH`). This
+   * covers the same property at runtime and states it where a reader of the test
+   * suite will find it: one key set, not two that drifted.
+   */
+  it("carries the same key set in both languages", () => {
+    const zh = keyPaths(OVERVIEW_I18N.zh).sort();
+    const en = keyPaths(OVERVIEW_I18N.en).sort();
+    expect(en).toEqual(zh);
+    expect(zh.length).toBeGreaterThan(100);
+  });
+
+  /**
+   * The failure the key comparison CANNOT see: a key copied into the English
+   * dictionary and never actually translated. Scanning for CJK is unreliable
+   * against a whole page (the model's own text is Chinese) — against the English
+   * dictionary alone it is exact.
+   */
+  it("has no Chinese left in the English dictionary", () => {
+    const untranslated = leafValues(OVERVIEW_I18N.en).filter((v) => CJK.test(v));
+    expect(untranslated).toEqual([]);
+  });
+
+  /**
+   * A translation may reshape a sentence freely, but it may not lose or invent
+   * an argument: the two strings are filled from the same `fmt` call site, so a
+   * `{1}` that exists in one language and not the other renders a number in one
+   * and nothing in the other. English also carries `{0|one|many}` plural forms
+   * Chinese has no use for, so only the INDEX set is compared.
+   */
+  it("references the same substitution slots in both languages", () => {
+    const slots = (s: string) =>
+      [...s.matchAll(/\{(\d)(?:\|[^|}]*\|[^}]*)?\}/g)].map((m) => m[1]).sort();
+    const zhBy = new Map(
+      keyPaths(OVERVIEW_I18N.zh).map((p, i) => [p, leafValues(OVERVIEW_I18N.zh)[i] ?? ""]),
+    );
+    const enBy = new Map(
+      keyPaths(OVERVIEW_I18N.en).map((p, i) => [p, leafValues(OVERVIEW_I18N.en)[i] ?? ""]),
+    );
+    const mismatched = [...zhBy.entries()]
+      .filter(([k, v]) => String(slots(v)) !== String(slots(enBy.get(k) ?? "")))
+      .map(([k]) => k);
+    expect(mismatched).toEqual([]);
+  });
+
+  /**
+   * And the failure NEITHER of the above can see: interface copy that never
+   * entered the dictionary at all and is still hardcoded in the markup or the
+   * inline script. Isolated by removing the three places Chinese is legitimate —
+   * the model payload, the dictionary line itself, and the language switcher,
+   * whose labels are language NAMES and are never translated.
+   */
+  it("hardcodes no interface copy outside the dictionary", () => {
+    const chrome = renderOverviewHtml(sample(), META)
+      .replace(/<script id="data"[\s\S]*?<\/script>/, "")
+      .replace(/^\s*var T=.*$/m, "")
+      .replace(/<div class="lang"[\s\S]*?<\/div>/, "");
+    expect(chrome.match(CJK)).toBeNull();
+  });
+
+  it("ships both languages' copy in the one page", () => {
+    const html = renderOverviewHtml(sample(), META);
+    for (const zh of ["系统地图", "① 系统全景", "⑤ 欠账", "已落实", "死状态机", "看门狗"]) {
+      expect(html).toContain(zh);
+    }
+    for (const en of [
+      "System map",
+      "① System panorama",
+      "⑤ Outstanding",
+      "met",
+      "dead state machine",
+      "watchdogs",
+    ]) {
+      expect(html).toContain(en);
+    }
+  });
+
+  /**
+   * The switcher, and the rule that decides which language a first-time reader
+   * gets. Both live in the page: there is no server and no build-time choice to
+   * make it elsewhere.
+   */
+  it("defaults to the browser's language and remembers an explicit choice", () => {
+    const html = renderOverviewHtml(sample(), META);
+    expect(html).toContain('<div class="lang" id="lang"');
+    expect(html).toContain('data-lang="zh"');
+    expect(html).toContain('data-lang="en"');
+    // browser preference decides only when nothing was chosen before
+    expect(html).toContain("navigator.language");
+    expect(html).toContain('indexOf("zh")===0');
+    // …and the choice is page-scoped, so another codeontic page cannot flip it
+    expect(html).toContain('var LANGKEY="codeontic.overview.lang"');
+    expect(html).toContain("localStorage.setItem(LANGKEY,lang)");
+    // switching re-renders in place rather than reloading
+    expect(html).toContain("function render()");
+    expect(html).toContain("lang=want;");
+  });
+
+  /**
+   * Two module names in the payload are OUR placeholders, not the model's words,
+   * and the page maps them back to interface copy by exact match. Pinned from
+   * the DATA side: if either fallback is reworded at its source without the
+   * dictionary following, the map would keep showing the Chinese one in English.
+   */
+  it("keeps the two placeholder module names matchable from the dictionary", () => {
+    const { graph } = buildGraph([{ file: "a", node: loop({ id: "L1", owner: "" }) }]);
+    const model = computeOverviewModel(graph, computeConformance(graph, {}));
+    expect(model.background[0]?.owner).toBe(OVERVIEW_I18N.zh.arch.noOwner);
+    expect(computeArchitecture(model).modules[0]?.key).toBe(OVERVIEW_I18N.zh.arch.unplaced);
+    const html = renderOverviewHtml(model, META);
+    expect(html).toContain("function moduleLabel(s)");
+    expect(html).toContain("s===T.zh.arch.noOwner");
+    expect(html).toContain("s===T.zh.arch.unplaced");
+  });
+
+  it("stays self-contained and byte-identical across renders with the dictionary aboard", () => {
+    const m = sample();
+    const html = renderOverviewHtml(m, META);
+    expect(html.match(/https?:\/\//g)).toBeNull();
+    expect(renderOverviewHtml(m, META)).toBe(html);
   });
 });
