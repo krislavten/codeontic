@@ -703,11 +703,6 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
 
 <div class="app">
   <div class="main">
-    <section class="block" id="findBlock">
-      <h2 id="findHead"></h2>
-      <p class="sub">这里集中了图上所有没守住的地方——记录在案的旧账，和代码或测试还没接上的节点。每一条都在等一个人拍板：修掉、删掉，还是先认下。</p>
-      <div id="findings"></div>
-    </section>
     <section class="block">
       <h2 id="flowsHead"></h2>
       <p class="sub">每条链路里的 loop 按执行先后排列。链路下方的小签是「交接点」——两个 loop 交棒的位置，最容易出问题，所以模型把它们单独记录、单独打分。</p>
@@ -717,6 +712,11 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
       <h2 id="bgHead"></h2>
       <p class="sub">进这一栏只有一个原因：<b>没有任何链路用到它</b>。它可能真是独立运转的后台机器，也可能只是还没被画进某条旅程——归在这里不代表它不重要。按代码包分组；<span style="font-family:var(--mono);font-size:12px">↳</span> 表示内嵌在别的 loop 里的子循环。</p>
       <div class="owners" id="owners"></div>
+    </section>
+    <section class="block" id="findBlock">
+      <h2 id="findHead"></h2>
+      <p class="sub">这里集中了图上所有没守住的地方——记录在案的旧账，和代码或测试还没接上的节点。每一条都在等一个人拍板：修掉、删掉，还是先认下。</p>
+      <div id="findings"></div>
     </section>
   </div>
   <aside class="drawer" id="drawer">
@@ -765,10 +765,10 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
   if(M.repoLabel&&M.repoHref){
     repoEl.innerHTML='仓库 <a href="'+encodeURI(M.repoHref)+'" target="_blank" rel="noopener">'+esc(M.repoLabel)+' ↗</a>';
   }else{ repoEl.style.display="none"; }
-  document.getElementById("flowsHead").textContent="② 用户旅程 —— "+D.flows.length+" 条端到端链路";
+  document.getElementById("flowsHead").textContent="① 用户旅程 —— "+D.flows.length+" 条端到端链路";
   // Criterion, not conclusion (016 D7): this bucket means "no flow references
   // it", which is not the same claim as "it is background machinery".
-  document.getElementById("bgHead").textContent="③ 不在任何链路里的 loop —— "+D.summary.background+" 个";
+  document.getElementById("bgHead").textContent="② 不在任何链路里的 loop —— "+D.summary.background+" 个";
   if(!D.background.length) document.getElementById("bgBlock").style.display="none";
   if(!M.repoResolved){
     document.getElementById("metawarn").innerHTML='<p class="warn">本页没有对照真实代码生成（缺 --repo-root）：落实状态只反映模型自己的声明，锚点和测试文件是否真的存在，并没有核实过。</p>';
@@ -833,7 +833,7 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
   if(nGap) findParts.push(nGap+" 个有缺口");
   if(nPartial) findParts.push(nPartial+" 个半落实");
   document.getElementById("findHead").textContent=
-    "① 欠账 —— "+(findParts.length?findParts.join(" · "):"已结清");
+    "③ 欠账 —— "+(findParts.length?findParts.join(" · "):"已结清");
   if(!D.findings.length){
     document.getElementById("findings").innerHTML=
       '<div class="owner"><div class="dv soft">没有欠账——打过分的节点全部已落实。</div></div>';
