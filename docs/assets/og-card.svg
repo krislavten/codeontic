@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img"
+     aria-label="codeontic — 人审模型，agent 写码">
+  <!--
+    Social share card, 1200x630 (2:1) for X's summary_large_image.
+
+    WeChat crops a share thumbnail to a SQUARE, so everything that carries
+    meaning lives inside the centre 630x630 band (x from 285 to 915). The two
+    outer columns hold only background texture — losing them costs nothing.
+    That constraint is why this is a purpose-built card rather than the page
+    screenshot: no single image satisfies 2:1 and 1:1 at once.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0d111c"/>
+      <stop offset="1" stop-color="#151b29"/>
+    </linearGradient>
+    <style>
+      .mono{font-family:"SF Mono",Menlo,Consolas,monospace}
+      .sans{font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",-apple-system,"Segoe UI",Roboto,sans-serif}
+    </style>
+  </defs>
+
+  <rect width="1200" height="630" fill="url(#bg)"/>
+
+  <!-- outer texture: sacrificial, lives outside the square safe area -->
+  <g opacity=".18">
+    <rect x="70" y="150" width="150" height="34" rx="4" fill="none" stroke="#33c795" stroke-width="1.5"/>
+    <rect x="70" y="204" width="150" height="34" rx="4" fill="none" stroke="#33c795" stroke-width="1.5"/>
+    <rect x="70" y="258" width="150" height="34" rx="4" fill="none" stroke="#e0a63f" stroke-width="1.5"/>
+    <rect x="70" y="392" width="150" height="34" rx="4" fill="none" stroke="#33c795" stroke-width="1.5"/>
+    <rect x="980" y="150" width="150" height="34" rx="4" fill="none" stroke="#33c795" stroke-width="1.5"/>
+    <rect x="980" y="204" width="150" height="34" rx="4" fill="none" stroke="#e07d92" stroke-width="1.5"/>
+    <rect x="980" y="258" width="150" height="34" rx="4" fill="none" stroke="#33c795" stroke-width="1.5"/>
+    <rect x="980" y="392" width="150" height="34" rx="4" fill="none" stroke="#33c795" stroke-width="1.5"/>
+    <path d="M220 167H980" stroke="#7c88ff" stroke-width="1.5" stroke-dasharray="6 5"/>
+    <path d="M220 409H980" stroke="#7c88ff" stroke-width="1.5" stroke-dasharray="6 5"/>
+  </g>
+
+  <!-- ===== centre 630x630 safe area: x 285..915 ===== -->
+  <text x="600" y="150" text-anchor="middle" class="mono" font-size="19" letter-spacing="4.5"
+        fill="#7c88ff" font-weight="600">DETERMINISTIC · ZERO-LLM GATE</text>
+
+  <text x="600" y="266" text-anchor="middle" class="mono" font-size="96" font-weight="700"
+        fill="#e7ecf6" letter-spacing="-2">codeontic</text>
+
+  <text x="600" y="345" text-anchor="middle" class="sans" font-size="44" font-weight="700" fill="#e7ecf6">
+    人审模型，agent 写码
+  </text>
+
+  <text x="600" y="399" text-anchor="middle" class="sans" font-size="22" fill="#9aa5bd">
+    The model is the source of truth — code is a projection
+  </text>
+
+  <!-- the three verdicts, the one visual the whole tool turns on -->
+  <g transform="translate(600 480)">
+    <g transform="translate(-258 0)">
+      <rect x="0" y="0" width="150" height="46" rx="7" fill="#0f2a23" stroke="#33c795" stroke-width="2"/>
+      <text x="75" y="30" text-anchor="middle" class="mono" font-size="17" fill="#33c795" font-weight="650">met</text>
+    </g>
+    <g transform="translate(-75 0)">
+      <rect x="0" y="0" width="150" height="46" rx="7" fill="#2b2413" stroke="#e0a63f" stroke-width="2"/>
+      <text x="75" y="30" text-anchor="middle" class="mono" font-size="17" fill="#e0a63f" font-weight="650">partial</text>
+    </g>
+    <g transform="translate(108 0)">
+      <rect x="0" y="0" width="150" height="46" rx="7" fill="#2c1a20" stroke="#e07d92" stroke-width="2"/>
+      <text x="75" y="30" text-anchor="middle" class="mono" font-size="17" fill="#e07d92" font-weight="650">gap</text>
+    </g>
+  </g>
+
+  <text x="600" y="576" text-anchor="middle" class="mono" font-size="20" fill="#6b7690">
+    npx codeontic init
+  </text>
+</svg>

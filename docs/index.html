@@ -5,13 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>codeontic —— 人审模型，agent 写码</title>
 <meta name="description" content="codeontic 在代码之上建一层逻辑模型：loop、flow、junction、scenario、debt 五种节点锚定到真实代码符号，每次 PR 确定性校验。门禁不调 LLM、不联网、不运行你的代码。">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://krislavten.github.io/codeontic/">
-<meta property="og:title" content="codeontic —— 人审模型，agent 写码">
-<meta property="og:description" content="在代码之上建一层人能审、机器能核对的逻辑模型。建模是真相源，代码只是投影，随时可以重写。">
-<meta property="og:image" content="https://krislavten.github.io/codeontic/assets/site-showcase.png">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://krislavten.github.io/codeontic/assets/site-showcase.png">
+  <!--
+    Share cards. The two tag families are deliberately given DIFFERENT
+    languages, because they serve different readers: WeChat reads only og:*,
+    and it is where the Chinese audience shares; X prefers twitter:* and falls
+    back to og:* only when they are absent. One HTML, both audiences.
+
+    og:image is a purpose-built 1200x630 card (assets/og-card.svg is its
+    source), not the page screenshot: X crops summary_large_image to 2:1 and
+    WeChat crops its thumbnail to a SQUARE, and no single screenshot survives
+    both. Everything that carries meaning on that card sits inside the centre
+    630x630 band, so the square crop loses only background texture.
+  -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="codeontic">
+  <meta property="og:url" content="https://krislavten.github.io/codeontic/">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:locale:alternate" content="en_US">
+  <meta property="og:title" content="codeontic —— 人审模型，agent 写码">
+  <meta property="og:description" content="在代码之上建一层人能审、机器能核对的逻辑模型。建模是真相源，代码只是投影，随时可以重写。">
+  <meta property="og:image" content="https://krislavten.github.io/codeontic/assets/og-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="codeontic —— 人审模型，agent 写码">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="codeontic — humans review the model, agents write the code">
+  <meta name="twitter:description" content="A behavioral model above your code that people can review and a machine can check. The model is the source of truth; code is a projection you can rewrite freely.">
+  <meta name="twitter:image" content="https://krislavten.github.io/codeontic/assets/og-card.png">
+  <meta name="twitter:image:alt" content="codeontic — the model is the source of truth, code is a projection">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23ec3013'/></svg>">
 <style>
 :root{
