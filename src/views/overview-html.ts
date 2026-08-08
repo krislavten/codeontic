@@ -584,6 +584,14 @@ export interface ArchNode {
   kind: "loop" | "flow";
   /** Full title — the hover tooltip, since the node itself only fits the id. */
   title: string;
+  /**
+   * Module this node was filed under. Shipped per-node so the page can group
+   * §③ by the SAME answer the picture used: §③ used to bucket by
+   * `moduleKeyOf(owner)` alone and the panorama by owner-then-anchor-path, so
+   * one loop with no owner appeared under "（无 owner）" in one section and
+   * under its real package in the other.
+   */
+  mod: string;
   verdict: string;
   x: number;
   y: number;
@@ -597,6 +605,12 @@ export interface ArchModule {
   key: string;
   /** `key` with the repo-wide common prefix stripped — what the box shows. */
   label: string;
+  /**
+   * The catch-all bucket, not a real package — so a header counting "N code
+   * packages" can leave it out instead of inventing a package that does not
+   * exist in the repo.
+   */
+  residual: boolean;
   loops: number;
   flows: number;
   met: number;
@@ -635,6 +649,22 @@ export interface Architecture {
 const UNPLACED = "（未归属）";
 
 /**
+ * Rough advance width in SVG user units. A CJK/fullwidth glyph is about twice
+ * as wide as a Latin one, and `owner` is free text — measuring by
+ * `String.length` alone under-estimated a Chinese package name by half, so the
+ * box was drawn too narrow and its label spilled onto the neighbouring box.
+ * Deliberately an estimate: the real advance needs a font the renderer does not
+ * have, and the layout must stay deterministic (no measuring at paint time).
+ */
+const FULLWIDTH =
+  /[\u1100-\u115F\u2E80-\u303E\u3041-\u33FF\u3400-\u4DBF\u4E00-\u9FFF\uA000-\uA4CF\uAC00-\uD7A3\uF900-\uFAFF\uFE30-\uFE6F\uFF00-\uFF60\uFFE0-\uFFE6]/;
+export function textWidth(text: string, unit = 7.1): number {
+  let cols = 0;
+  for (const ch of text) cols += FULLWIDTH.test(ch) ? 2 : 1;
+  return cols * unit;
+}
+
+/**
  * Lay the panorama out. Pure and deterministic — same model in, byte-identical
  * SVG geometry out, which is what keeps `renderOverviewHtml` idempotent.
  */
@@ -642,10 +672,38 @@ export function computeArchitecture(model: OverviewModel): Architecture {
   const loops = Object.values(model.loops);
   const known = [...new Set(loops.map((l) => moduleKeyOf(l.owner)).filter(Boolean))];
 
+  // Every module an anchor path implies. Needed for the aliasing below, and it
+  // is also what puts a package with flows but no loops on the map at all.
+  const fromPaths = new Set<string>();
+  for (const l of loops)
+    for (const a of l.anchors) if (a.file) fromPaths.add(moduleOfPath(a.file, known) ?? "");
+  for (const f of model.flows)
+    for (const a of f.anchors) if (a.file) fromPaths.add(moduleOfPath(a.file, known) ?? "");
+  fromPaths.delete("");
+
+  /**
+   * `owner` is free text (`z.string().min(1)`), so the same package can arrive
+   * as a bare name from a loop ("orders") and as a path from a flow's anchor
+   * ("packages/orders"). Keeping those apart drew ONE package as two boxes —
+   * one holding its loops, one holding its entrances — and every count and
+   * cross-module verdict derived from the split was wrong with it.
+   */
+  const alias = new Map<string, string>();
+  for (const o of known) {
+    if (o.includes("/")) continue;
+    const hit = [...fromPaths]
+      .filter((p) => p.endsWith(`/${o}`))
+      .sort((a, b) => a.length - b.length)[0];
+    if (hit) alias.set(o, hit);
+  }
+  const canon = (k: string) => alias.get(k) ?? k;
+
   const placeLoop = (l: OverviewLoop): string =>
-    moduleKeyOf(l.owner) ||
-    (l.anchors[0]?.file ? moduleOfPath(l.anchors[0].file, known) : null) ||
-    UNPLACED;
+    canon(
+      moduleKeyOf(l.owner) ||
+        (l.anchors[0]?.file ? moduleOfPath(l.anchors[0].file, known) : null) ||
+        UNPLACED,
+    );
 
   // A flow carries no owner, so its module comes from its own anchors first
   // (an `anchored` flow IS code) and from the loops it traverses second (a
@@ -653,13 +711,13 @@ export function computeArchitecture(model: OverviewModel): Architecture {
   const placeFlow = (f: OverviewFlow): string => {
     for (const a of f.anchors) {
       const m = a.file ? moduleOfPath(a.file, known) : null;
-      if (m) return m;
+      if (m) return canon(m);
     }
     for (const id of [...f.steps, ...f.guards]) {
       const l = model.loops[id];
       if (l) {
         const m = moduleKeyOf(l.owner);
-        if (m) return m;
+        if (m) return canon(m);
       }
     }
     return UNPLACED;
@@ -693,7 +751,13 @@ export function computeArchitecture(model: OverviewModel): Architecture {
   // whom. A cross-module junction drawn across the whole canvas is the one
   // thing that turns this picture into spaghetti, so placement fights it.
   const affinity = new Map<string, number>();
-  const pairKey = (a: string, b: string) => (a < b ? `${a} ${b}` : `${b} ${a}`);
+  // JSON, not a delimiter character: an owner is free text and a path can hold
+  // almost anything, so any separator we pick could appear inside a key. (This
+  // line used to join with a literal NUL, which additionally made grep treat
+  // this whole file as binary and skip it — silently defeating the repo's
+  // "grep the whole tree before a rename" rule.)
+  const pairKey = (a: string, b: string) =>
+    a < b ? JSON.stringify([a, b]) : JSON.stringify([b, a]);
   for (const j of junctions.values()) {
     for (let i = 0; i + 1 < j.between.length; i++) {
       const ma = homeOf.get(j.between[i] ?? "");
@@ -758,7 +822,7 @@ export function computeArchitecture(model: OverviewModel): Architecture {
   const plans = order.flatMap((key) => {
     const b = members.get(key);
     if (!b) return [];
-    const nameCols = Math.ceil((labelOf(key).length * 7.1 + 8) / (ARCH.NODE_W + ARCH.GAP));
+    const nameCols = Math.ceil((textWidth(labelOf(key)) + 8) / (ARCH.NODE_W + ARCH.GAP));
     const cols = Math.max(colsFor(b.flows.length + b.loops.length), Math.min(nameCols, 5));
     const rows = rowsOf(b.flows.length, cols) + rowsOf(b.loops.length, cols);
     // Entrances and loops are two groups, not one grid — an extra gap between
@@ -808,6 +872,7 @@ export function computeArchitecture(model: OverviewModel): Architecture {
       const box: ArchModule = {
         key: p.key,
         label: labelOf(p.key),
+        residual: p.key === UNPLACED,
         loops: p.b.loops.length,
         flows: p.b.flows.length,
         met: 0,
@@ -833,6 +898,7 @@ export function computeArchitecture(model: OverviewModel): Architecture {
             id: item.id,
             kind,
             title: item.title,
+            mod: p.key,
             verdict,
             x: cx + ARCH.MOD_PAD + col * (ARCH.NODE_W + ARCH.GAP),
             y: ny,
@@ -884,6 +950,7 @@ export function computeArchitecture(model: OverviewModel): Architecture {
   let droppedEdges = 0;
   for (const j of junctions.values()) {
     let missing = 0;
+    let drawn = 0;
     // `between` is usually a pair but the schema allows more; chain them, so a
     // 3-way junction shows as two segments rather than silently losing one.
     // A ONE-sided junction (`between` is `.min(1)`, so that is a legal model)
@@ -914,8 +981,13 @@ export function computeArchitecture(model: OverviewModel): Architecture {
         cross: moduleOfNode.get(a.id) !== moduleOfNode.get(b2.id),
         d: `M${Math.round(from.x)} ${Math.round(from.y)}Q${qx} ${qy} ${Math.round(to.x)} ${Math.round(to.y)}`,
       });
+      drawn++;
     }
-    if (missing) droppedEdges++;
+    // Only when NOTHING of this junction reached the canvas. A 3-way junction
+    // with one dangling endpoint still has a segment on the picture, and
+    // counting it as "not drawn" put the footnote in direct contradiction with
+    // the line the reader can see.
+    if (missing && !drawn) droppedEdges++;
   }
 
   return {
@@ -934,16 +1006,408 @@ function safeJson(value: unknown): string {
   return JSON.stringify(value).replace(/</g, "\\u003c");
 }
 
+/* ---------------------------------------------------------------------------
+ * Interface copy, both languages, shipped INSIDE the page
+ *
+ * `overview` emits one self-contained HTML file, and `docs/examples/*.html` is
+ * the link this project hands the world (the README points straight at it). One
+ * link has to serve a Chinese reader and an English reader alike — that is what
+ * this output shape is for. A `--lang` flag would do the opposite: each
+ * generated file would serve exactly one of them, the same page would have to
+ * be built twice, and the README would have to pick which half of its readers
+ * the link is for. So the language lives in the page — both dictionaries ship
+ * with it, the reader flips between them in place, and the choice is remembered.
+ *
+ * ONLY interface copy is here. Everything the MODEL says — loop/flow/junction
+ * titles, boundaries, GWT prose, debt subjects, owners, code paths, ids — is the
+ * user's own writing and renders verbatim under both languages. An English shell
+ * around a Chinese model is therefore the correct result, not a missed string.
+ *
+ * The one exception: `（无 owner）` and `（未归属）` are OUR placeholders, not the
+ * model's words, and `computeOverviewModel` / `computeArchitecture` bake them
+ * into the payload. The page maps them back to interface copy at render time
+ * (`moduleLabel`) instead of at the source, because those two functions are pure
+ * data/geometry — and because an already-generated page must keep re-rendering
+ * from its own island, which holds the placeholder the day it was written.
+ *
+ * `ZH` is deliberately NOT `as const`: `EN: typeof ZH` is what makes the compiler
+ * reject a missing or extra English key, and literal types would instead demand
+ * that the English values BE the Chinese ones.
+ */
+const ZH = {
+  docTitle: "系统地图 · codeontic overview",
+  langLabel: "界面语言",
+  h1: "系统地图——每条链路、每个 loop 都能点开",
+  intro:
+    "系统被拆成两种东西：<b>loop</b>——会自己往前走的循环（状态机、轮询、重试链、渲染循环）；<b>链路</b>——用户走完的一段完整旅程，可能自己就绑着代码，也可能由若干 loop 按执行先后接起来。<b>图上和文中的任何一个方块、一条链路都能点开</b>，看它在做什么、代码在哪、有没有测试守着。",
+  repoPrefix: "仓库",
+  warnNoRepo:
+    "本页没有对照真实代码生成（缺 --repo-root）：落实状态只反映模型自己的声明，锚点和测试文件是否真的存在，并没有核实过。",
+  foot: '本页由 codeontic 从行为模型直接生成：所有 loop、链路、场景、锚点都来自 <span class="mono">.codeontic/model</span>，落实状态对照真实代码算出。改了模型或代码，重新生成这页就跟着变。',
+  provGenerated: '生成于 <span class="mono">{0}</span>',
+  provModel: '模型指纹 <span class="mono">{0}</span>',
+  provSep: " · ",
+  covFiles: "这张图绑定了 <b>{0}</b> 个代码文件",
+  covCommits: "；最近 <b>{0}</b> 次提交里，有 <b>{1}</b> 次改到了它们（{2}%）",
+  covCaliber:
+    '。<span class="cal">这两个数字只说明这张图翻过了多少代码。<b>该建模的行为有没有漏画，机器数不出来</b>——要人对着业务自己清点。</span>',
+  stats: {
+    loops: "loop 总数",
+    inFlow: "在链路里",
+    background: "不在任何链路里",
+    met: "已落实",
+    partial: "半落实",
+    gap: "有缺口",
+    debts: "旧账",
+    dormant: "休眠 · 不打分",
+    flowsExcluded: "组合链路 · 不单独打分",
+  },
+  verdict: { met: "已落实", partial: "半落实", gap: "有缺口", dormant: "休眠", unknown: "未评" },
+  debtcat: { dead_state_machine: "死状态机", deferred: "已声明、未兑现", other: "其他" },
+  gapkind: {
+    "no-anchor": "还没绑定到具体代码",
+    "anchor-missing": "绑定的代码文件已经不在了",
+    "no-scenario": "还没有场景描述它的行为",
+    "scenario-unverified": "写了场景，但没绑定测试",
+    "test-missing": "绑定的测试文件找不到了",
+    "queue-unmatched": "声明消费的队列，在代码里没找到",
+    "evidence-missing": "证据指向的文件不存在",
+  },
+  kind: { loop: "loop", flow: "链路", junction: "交接点" },
+  // The 5 junction risk classes (schema/status.ts). ④ is the only place on the
+  // page that answers "which handoffs exist at all", so this enum lands on the
+  // most prominent badge of every row there — it cannot stay a raw slug.
+  risk: {
+    handoff: "交接",
+    idempotency: "幂等",
+    projection: "投影一致",
+    failure_propagation: "故障传播",
+    watchdog: "看门狗",
+  },
+  axis: { codeOk: "代码 ✓", codeMissing: "代码 ✗", testOk: "测试 ✓", testMissing: "测试 ✗" },
+  file: { exists: "✓ 存在", missing: "✗ 缺失" },
+  arch: {
+    head: "① 系统全景 —— {0} 个代码包 · {1} 个入口链路 · {2} 个 loop",
+    sub: "整个系统一张图：按代码包分区，每个方块是一个建模过的东西——圆角胶囊是<b>入口链路</b>，方块是<b>loop</b>，颜色是落实程度。连线是<b>交接点</b>：两个东西交棒的位置，虚线的那条跨了包。鼠标停在一条入口上，会点亮它经过的 loop；点任何一个方块，右下详情栏展开它的全部信息。<br>盒子标题上的三色计数只数盒子里这些方块；页首的总数还含交接点，所以两边不相等是对的。",
+    legendFlow: "入口链路",
+    legendLoop: "loop",
+    legendMet: "已落实：代码、测试都有",
+    legendPartial: "半落实：有代码，缺测试",
+    legendGap: "有缺口：代码或测试没接上",
+    legendUnknown: "灰的不打分：组合链路，分数在它每一步的 loop 上",
+    legendCross: "跨包交接点",
+    aria: "系统全景图",
+    unitFlows: "{0} 入口",
+    unitLoops: "{0} loop",
+    unitMet: "{0} 已落实",
+    unitPartial: "{0} 半落实",
+    unitGap: "{0} 有缺口",
+    nodeFlow: "入口链路",
+    nodeLoop: "loop",
+    edgeTitle: "交接点 {0}：{1} · {2}",
+    edgeCross: " · 跨包",
+    prefixNote: "包名省略了共同前缀 {0}",
+    dropped: "{0} 个交接点没画出来：它连的 id 在模型里不存在",
+    noteSep: "；",
+    unplaced: "（未归属）",
+    noOwner: "（无 owner）",
+  },
+  flows: {
+    head: "② 用户旅程 —— {0} 条端到端链路",
+    sub: "每条链路里的 loop 按执行先后排列。链路下方的小签是「交接点」——两个 loop 交棒的位置，最容易出问题，所以模型把它们单独记录、单独打分。",
+    composedPill: "组合链路",
+    codeLabel: "代码",
+    guardsLabel: "看门狗",
+    junctionsLabel: "交接点",
+  },
+  bg: {
+    head: "③ 不在任何链路里的 loop —— {0} 个",
+    sub: '进这一栏只有一个原因：<b>没有任何链路用到它</b>。它可能真是独立运转的后台机器，也可能只是还没被画进某条旅程——归在这里不代表它不重要。按代码包分组；<span style="font-family:var(--mono);font-size:12px">↳</span> 表示内嵌在别的 loop 里的子循环。',
+  },
+  detail: {
+    head: "④ 建模细节 —— {0} 个交接点 · {1} 个场景（loop 和链路上的）",
+    headQueues: " · {0} 个队列",
+    sub: "模型里除了 loop 和链路之外的东西，集中在这里：交接在哪、行为有没有被场景写下来、场景有没有真的绑到测试。",
+    junctionsTitle: "交接点 · {0} 个",
+    junctionsNote: "两个东西交棒的位置。模型单独记录、单独打分，因为出问题最多的就是这里。",
+    scnTitle: "场景与测试覆盖",
+    scnNote:
+      "场景就是用业务的话写下的一条行为：给定…当…则…。它必须指向一个真实存在的测试文件，机器才认。",
+    scnTotal: "写下来的场景",
+    scnTested: "绑到了真实存在的测试",
+    scnUnchecked: "绑了测试、这次没核对存在性",
+    scnNoTest: "写了场景、没绑测试",
+    scnBroken: "绑了测试、文件已不在",
+    scnUndef: "引用了不存在的场景",
+    scnNoneNodes: "一个场景都没有的节点",
+    scnNoneValue: "{0} / 共 {1} 个",
+    scnScope:
+      "以上只数 loop 和链路自己的场景；交接点也能带场景，这里没有计入——它们缺什么，看 ⑤ 欠账。<br>另外，机器只核对测试文件在不在、指得对不对。<b>它不判断这个测试是否真的测到了场景说的事</b>——那要跑你的代码，门禁永远不跑。",
+    queuesTitle: "队列与消费关系 · {0} 个",
+    queuesNote: "模型声明「这个 loop 消费这个队列」，适配器再去代码里找同名的队列对账。",
+    queueMissing: "代码里没找到",
+  },
+  findings: {
+    head: "⑤ 欠账 —— {0}",
+    sub: "最后是这张图上所有没守住的地方——记录在案的旧账，和代码或测试还没接上的节点。每一条都在等一个人拍板：修掉、删掉，还是先认下。",
+    settled: "已结清",
+    nDebts: "{0} 笔旧账",
+    nGaps: "{0} 个有缺口",
+    nPartials: "{0} 个半落实",
+    sep: " · ",
+    empty: "没有欠账——打过分的节点全部已落实。",
+    debtBadge: "旧账 · {0}",
+    reality: "<b>实际情况：</b>",
+    claim: "曾经声称：",
+    owner: "归属 {0}",
+    removal: "退场条件：{0}",
+    metaSep: " · ",
+    expand: "展开全文（{0} 字）",
+    collapse: "收起",
+  },
+  drawer: {
+    hint: "← 点一条链路或一个 loop<br>详情会在这里展开",
+    doing: "在做什么",
+    boundary: "状态流转：{0}",
+    status: "落实到什么程度",
+    statusLead: "{0}。",
+    owner: "归属",
+    ownerNone: "（未标归属）",
+    codeWhere: "代码在哪",
+    codeNone: "还没绑定到具体代码。",
+    queues: "消费的队列",
+    notes: "维护者备注",
+    embeddedIn: "内嵌于 {0}",
+    junctionsRelated: "相关交接点",
+    junctionsCrossed: "穿过的交接点",
+    scnHead: "测试覆盖 · {0} 个场景",
+    scnNoneLoop: "还没有场景描述它的行为。",
+    scnUndefined: "{0} · 未定义",
+    scnNoTest: "这个场景还没绑定测试。",
+    gwtGiven: "给定",
+    gwtWhen: "当",
+    gwtThen: "则",
+    flowBadge: "链路",
+    flowOwnCode: "链路自己的代码",
+    flowNoAnchorsSteps: "链路本身没有代码锚点——实现都在下面的步骤里。",
+    flowNoAnchors: "链路本身没有代码锚点。",
+    steps: "步骤 · 按执行先后",
+    guards: "看门狗 · 不在步骤里，但盯着这条链路",
+    scnNoneFlowSteps: "链路本身还没有场景——每一步 loop 可能各自有，点进去看。",
+    scnNoneFlow: "链路本身还没有场景。",
+    composedLead: "这是一条组合链路。",
+    composedBody:
+      "它只负责把下面几个 loop 串起来，自己不单独打分。它落实到什么程度，看每一步 loop 自己的圆点。",
+  },
+  status: {
+    met: "代码和测试都接上了：这个行为绑定在真实代码上，也有测试守着。",
+    partial: "代码接上了，测试还有缺口。缺什么，列在下面。",
+    gap: "模型写下了这个行为，但代码或测试还没接上。这笔账记在实现那边——不是模型写错了，是代码还没兑现。",
+    dormant: "休眠：登记了但还没接线，不参与打分。",
+  },
+};
+
+const EN: typeof ZH = {
+  docTitle: "System map · codeontic overview",
+  langLabel: "Interface language",
+  h1: "System map — every flow and every loop opens up",
+  intro:
+    "The system is split into two kinds of thing: a <b>loop</b> — a cycle that moves on its own (state machines, pollers, retry chains, render loops); and a <b>flow</b> — one complete journey a user walks, which may be bound to code itself or may be several loops strung together in execution order. <b>Every box on the map and every flow in the text opens up</b>: what it does, where its code is, and whether a test is guarding it.",
+  repoPrefix: "repo",
+  warnNoRepo:
+    "This page was not generated against a real checkout (no --repo-root): the status shown only reflects what the model claims, and whether the anchored source and test files actually exist has not been checked.",
+  foot: 'This page is generated by codeontic straight from the behavior model: every loop, flow, scenario and anchor comes from <span class="mono">.codeontic/model</span>, and the status is computed against real code. Change the model or the code, regenerate this page, and it follows.',
+  provGenerated: 'generated <span class="mono">{0}</span>',
+  provModel: 'model fingerprint <span class="mono">{0}</span>',
+  provSep: " · ",
+  covFiles: "This map is bound to <b>{0}</b> source files",
+  covCommits: "; of the last <b>{0}</b> commits, <b>{1}</b> touched one of them ({2}%)",
+  covCaliber:
+    '. <span class="cal">Those two numbers say only how much code this map has been through. <b>Whether a behavior that should have been modeled is missing, no machine can count</b> — a person has to go through the business and check.</span>',
+  stats: {
+    loops: "loops",
+    inFlow: "in a flow",
+    background: "in no flow",
+    met: "met",
+    partial: "partial",
+    gap: "gap",
+    debts: "debt entries",
+    dormant: "dormant · ungraded",
+    flowsExcluded: "composed flows · ungraded",
+  },
+  verdict: { met: "met", partial: "partial", gap: "gap", dormant: "dormant", unknown: "ungraded" },
+  debtcat: {
+    dead_state_machine: "dead state machine",
+    deferred: "declared, never delivered",
+    other: "other",
+  },
+  gapkind: {
+    "no-anchor": "not bound to any code yet",
+    "anchor-missing": "the source file it was bound to is gone",
+    "no-scenario": "no scenario describes this behavior yet",
+    "scenario-unverified": "a scenario is written, but no test is bound",
+    "test-missing": "the test file it was bound to cannot be found",
+    "queue-unmatched": "the queue it declares consuming was not found in the code",
+    "evidence-missing": "the file the evidence points at does not exist",
+  },
+  kind: { loop: "loop", flow: "flow", junction: "junction" },
+  risk: {
+    handoff: "handoff",
+    idempotency: "idempotency",
+    projection: "projection",
+    failure_propagation: "failure propagation",
+    watchdog: "watchdog",
+  },
+  axis: { codeOk: "code ✓", codeMissing: "code ✗", testOk: "test ✓", testMissing: "test ✗" },
+  file: { exists: "✓ present", missing: "✗ missing" },
+  arch: {
+    head: "① System panorama — {0|package|packages} · {1|entry flow|entry flows} · {2|loop|loops}",
+    sub: "The whole system in one picture, laid out by code package. Every box is one modeled thing — a rounded capsule is an <b>entry flow</b>, a square is a <b>loop</b>, and the colour is how far it is implemented. A line is a <b>junction</b>: the point where two things hand off, and a dashed one crosses a package boundary. Hover an entry flow to light up the loops it walks; click any box and the detail panel opens with everything it knows.<br>The three-colour counts on a box header only count the blocks inside that box; the totals at the top of the page also include junctions, so the two are not meant to match.",
+    legendFlow: "entry flow",
+    legendLoop: "loop",
+    legendMet: "met: both code and tests",
+    legendPartial: "partial: code, no tests",
+    legendGap: "gap: code or tests not connected",
+    legendUnknown: "grey is ungraded: a composed flow, scored through the loops of each step",
+    legendCross: "cross-package junction",
+    aria: "system panorama",
+    unitFlows: "{0|entry|entries}",
+    unitLoops: "{0|loop|loops}",
+    unitMet: "{0} met",
+    unitPartial: "{0} partial",
+    unitGap: "{0} gap",
+    nodeFlow: "entry flow",
+    nodeLoop: "loop",
+    edgeTitle: "junction {0}: {1} · {2}",
+    edgeCross: " · cross-package",
+    prefixNote: "package names drop their shared prefix {0}",
+    dropped: "{0|junction|junctions} not drawn: an id at one end does not exist in the model",
+    noteSep: "; ",
+    unplaced: "(unplaced)",
+    noOwner: "(no owner)",
+  },
+  flows: {
+    head: "② User journeys — {0|end-to-end flow|end-to-end flows}",
+    sub: "The loops inside each flow are listed in execution order. The small tags under a flow are its junctions — where two loops hand off. That is where things go wrong most, so the model records and grades each one on its own.",
+    composedPill: "composed flow",
+    codeLabel: "code",
+    guardsLabel: "watchdogs",
+    junctionsLabel: "junctions",
+  },
+  bg: {
+    head: "③ Loops in no flow — {0}",
+    sub: 'There is exactly one reason to be in this section: <b>no flow references it</b>. It may really be standalone background machinery, or it may simply not have been drawn into a journey yet — landing here does not mean it does not matter. Grouped by code package; <span style="font-family:var(--mono);font-size:12px">↳</span> marks a sub-loop embedded in another loop.',
+  },
+  detail: {
+    head: "④ Modeling detail — {0|junction|junctions} · {1|scenario|scenarios} (on loops and flows)",
+    headQueues: " · {0|queue|queues}",
+    sub: "Everything in the model that is neither a loop nor a flow lives here: where the handoffs are, whether a behavior has been written down as a scenario, and whether that scenario is really bound to a test.",
+    junctionsTitle: "Junctions · {0}",
+    junctionsNote:
+      "Where two things hand off. The model records and grades each one on its own, because this is where things go wrong most.",
+    scnTitle: "Scenarios and test coverage",
+    scnNote:
+      "A scenario is one behavior written in the language of the business: given… when… then…. It has to point at a test file that really exists before the machine will count it.",
+    scnTotal: "scenarios written down",
+    scnTested: "bound to a test that really exists",
+    scnUnchecked: "bound, existence not checked this run",
+    scnNoTest: "scenario written, no test bound",
+    scnBroken: "test bound, file gone",
+    scnUndef: "references a scenario that does not exist",
+    scnNoneNodes: "nodes with no scenario at all",
+    scnNoneValue: "{0} of {1}",
+    scnScope:
+      "The above counts only the scenarios loops and flows carry themselves; junctions can carry scenarios too and are not included here — for what they are missing, see ⑤.<br>Also, the machine only checks that a test file exists and that the binding resolves. <b>It does not judge whether that test really tests what the scenario says</b> — that would mean running your code, and the gate never does.",
+    queuesTitle: "Queues and their consumers · {0}",
+    queuesNote:
+      "The model declares that a loop consumes a queue; the adapter then goes looking for a queue of that name in the code and reconciles the two.",
+    queueMissing: "not found in the code",
+  },
+  findings: {
+    head: "⑤ Outstanding — {0}",
+    sub: "Last, every place on this map that is not holding up — debt on the record, and nodes whose code or tests are not connected yet. Every one of them is waiting for a person to call it: fix it, delete it, or own it.",
+    settled: "all settled",
+    nDebts: "{0|debt entry|debt entries}",
+    nGaps: "{0} with a gap",
+    nPartials: "{0} partial",
+    sep: " · ",
+    empty: "Nothing outstanding — every graded node is met.",
+    debtBadge: "debt · {0}",
+    reality: "<b>Actually:</b>",
+    claim: "Once claimed: ",
+    owner: "owner {0}",
+    removal: "removal condition: {0}",
+    metaSep: " · ",
+    expand: "show all ({0} chars)",
+    collapse: "collapse",
+  },
+  drawer: {
+    hint: "← Click a flow or a loop<br>its detail opens here",
+    doing: "what it does",
+    boundary: "state transition: {0}",
+    status: "how far it is implemented",
+    statusLead: "{0}.",
+    owner: "owner",
+    ownerNone: "(no owner recorded)",
+    codeWhere: "where the code is",
+    codeNone: "Not bound to any code yet.",
+    queues: "queues it consumes",
+    notes: "maintainer notes",
+    embeddedIn: "embedded in {0}",
+    junctionsRelated: "related junctions",
+    junctionsCrossed: "junctions it crosses",
+    scnHead: "test coverage · {0|scenario|scenarios}",
+    scnNoneLoop: "No scenario describes this behavior yet.",
+    scnUndefined: "{0} · undefined",
+    scnNoTest: "This scenario has no test bound yet.",
+    gwtGiven: "given",
+    gwtWhen: "when",
+    gwtThen: "then",
+    flowBadge: "flow",
+    flowOwnCode: "the flow's own code",
+    flowNoAnchorsSteps:
+      "The flow itself has no code anchor — the implementation is in the steps below.",
+    flowNoAnchors: "The flow itself has no code anchor.",
+    steps: "steps · in execution order",
+    guards: "watchdogs · not steps, but watching this flow",
+    scnNoneFlowSteps:
+      "The flow itself has no scenario yet — the loop of each step may have its own, click into them.",
+    scnNoneFlow: "The flow itself has no scenario yet.",
+    composedLead: "This is a composed flow.",
+    composedBody:
+      "All it does is string the loops below together; it is not graded on its own. How far it is implemented is what the dot on each step's loop says.",
+  },
+  status: {
+    met: "Code and tests are both connected: this behavior is bound to real code, and a test is guarding it.",
+    partial: "The code is connected, the tests still have a gap. What is missing is listed below.",
+    gap: "The model wrote this behavior down, but the code or the tests are not connected. That is owed by the implementation — the model is not wrong, the code has not delivered yet.",
+    dormant: "Dormant: registered but not wired up, and not graded.",
+  },
+};
+
+/**
+ * Both dictionaries, exported so the test suite can assert key parity between
+ * them — the compiler already rejects a missing English key (`EN: typeof ZH`),
+ * and the test covers the other half: a key that was copied over but never
+ * actually translated.
+ */
+export const OVERVIEW_I18N = { zh: ZH, en: EN };
+
 /**
  * Render the whole self-contained interactive page. The model + meta are embedded
  * as one inline JSON island; ALL DOM (chips, detail panel) is built by the inline
  * script from that data, so free-text (titles, scenario prose) is escaped by the
  * DOM, never hand-concatenated into markup. The script uses only string
- * concatenation (no template literals / `${}`), so this whole file drops in with a
- * single interpolation — the data — and no escaping surprises.
+ * concatenation (no template literals / `${}`), so this whole file drops in with
+ * two interpolations — the data and the dictionary — and no escaping surprises.
+ *
+ * The static title is the untranslated product line on purpose: it is only what
+ * a browser shows before the script runs, and picking a language for it would
+ * hand every reader of the OTHER language a wrong tab. render() sets the real,
+ * localized document.title immediately.
  */
 export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): string {
-  return `<title>系统地图 · codeontic overview</title>
+  return `<title>codeontic overview</title>
 <style>
   :root{
     --bg:#f4f6fa;--surface:#fff;--surface-2:#eef1f7;--ink:#1a2032;--ink-soft:#515a70;
@@ -970,8 +1434,19 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.6;
     -webkit-font-smoothing:antialiased;}
   .top{max-width:1280px;margin:0 auto;padding:40px 24px 20px;}
+  /* The eyebrow and the language switcher share one row rather than the switcher
+     being absolutely positioned: h1 is clamp(24px,4vw,36px) and the top padding
+     is fixed, so an absolute control would collide with the heading on a narrow
+     viewport. */
+  .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;}
   .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
     color:var(--accent);font-weight:600;}
+  .lang{display:flex;gap:2px;background:var(--surface);border:1px solid var(--line);
+    border-radius:9px;padding:2px;flex:none;}
+  .lang button{background:none;border:0;border-radius:7px;padding:4px 11px;font-family:var(--sans);
+    font-size:12.5px;color:var(--ink-soft);cursor:pointer;line-height:1.5;}
+  .lang button:hover{color:var(--accent);}
+  .lang button.on{background:var(--accent-soft);color:var(--accent);font-weight:650;}
   h1{font-size:clamp(24px,4vw,36px);letter-spacing:-.02em;margin:12px 0 4px;font-weight:750;}
   .subttl{font-family:var(--mono);font-size:13px;color:var(--ink-faint);margin:0 0 12px;}
   .intro{font-size:16px;color:var(--ink-soft);max-width:74ch;margin:0 0 6px;}
@@ -1186,11 +1661,17 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
 </style>
 
 <div class="top">
-  <div class="eyebrow">system map · codeontic overview</div>
-  <h1>系统地图——每条链路、每个 loop 都能点开</h1>
+  <div class="topbar">
+    <div class="eyebrow">system map · codeontic overview</div>
+    <div class="lang" id="lang" role="group">
+      <button type="button" data-lang="zh">中文</button>
+      <button type="button" data-lang="en">English</button>
+    </div>
+  </div>
+  <h1 id="h1"></h1>
   <p class="subttl" id="subttl"></p>
   <p class="repo" id="repo"></p>
-  <p class="intro">系统被拆成两种东西：<b>loop</b>——会自己往前走的循环（状态机、轮询、重试链、渲染循环）；<b>链路</b>——用户走完的一段完整旅程，可能自己就绑着代码，也可能由若干 loop 按执行先后接起来。<b>图上和文中的任何一个方块、一条链路都能点开</b>，看它在做什么、代码在哪、有没有测试守着。</p>
+  <p class="intro" id="intro"></p>
   <div id="metawarn"></div>
   <div class="stats" id="stats"></div>
   <p class="cov" id="cov"></p>
@@ -1199,16 +1680,16 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
 <div class="arena">
   <section class="block">
     <h2 id="archHead"></h2>
-    <p class="sub">整个系统一张图：按代码包分区，每个方块是一个建模过的东西——圆角胶囊是<b>入口链路</b>，方块是<b>loop</b>，颜色是落实程度。连线是<b>交接点</b>：两个东西交棒的位置，虚线的那条跨了包。鼠标停在一条入口上，会点亮它经过的 loop；点任何一个方块，右下详情栏展开它的全部信息。</p>
+    <p class="sub" id="archSub"></p>
     <div class="archbox"><div id="arch"></div></div>
     <div class="alegend">
-      <span class="k"><svg class="sw" viewBox="0 0 30 15" aria-hidden="true"><rect x="1" y="1" width="28" height="13" rx="6.5"/></svg> 入口链路</span>
-      <span class="k"><svg class="sw" viewBox="0 0 30 15" aria-hidden="true"><rect x="1" y="1" width="28" height="13" rx="2"/></svg> loop</span>
-      <span class="k"><i class="cd met"></i> 已落实：代码、测试都有</span>
-      <span class="k"><i class="cd partial"></i> 半落实：有代码，缺测试</span>
-      <span class="k"><i class="cd gap"></i> 有缺口：代码或测试没接上</span>
-      <span class="k"><i class="cd unknown"></i> 灰的不打分：组合链路，分数在它每一步的 loop 上</span>
-      <span class="k"><svg class="sw" viewBox="0 0 30 15" aria-hidden="true"><path class="xline" d="M1 7.5H29"/></svg> 跨包交接点</span>
+      <span class="k"><svg class="sw" viewBox="0 0 30 15" aria-hidden="true"><rect x="1" y="1" width="28" height="13" rx="6.5"/></svg> <span id="lgFlow"></span></span>
+      <span class="k"><svg class="sw" viewBox="0 0 30 15" aria-hidden="true"><rect x="1" y="1" width="28" height="13" rx="2"/></svg> <span id="lgLoop"></span></span>
+      <span class="k"><i class="cd met"></i> <span id="lgMet"></span></span>
+      <span class="k"><i class="cd partial"></i> <span id="lgPartial"></span></span>
+      <span class="k"><i class="cd gap"></i> <span id="lgGap"></span></span>
+      <span class="k"><i class="cd unknown"></i> <span id="lgUnknown"></span></span>
+      <span class="k"><svg class="sw" viewBox="0 0 30 15" aria-hidden="true"><path class="xline" d="M1 7.5H29"/></svg> <span id="lgCross"></span></span>
     </div>
     <p class="prefixnote" id="prefixnote"></p>
   </section>
@@ -1218,27 +1699,27 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
   <div class="main">
     <section class="block">
       <h2 id="flowsHead"></h2>
-      <p class="sub">每条链路里的 loop 按执行先后排列。链路下方的小签是「交接点」——两个 loop 交棒的位置，最容易出问题，所以模型把它们单独记录、单独打分。</p>
+      <p class="sub" id="flowsSub"></p>
       <div id="flows"></div>
     </section>
     <section class="block" id="bgBlock">
       <h2 id="bgHead"></h2>
-      <p class="sub">进这一栏只有一个原因：<b>没有任何链路用到它</b>。它可能真是独立运转的后台机器，也可能只是还没被画进某条旅程——归在这里不代表它不重要。按代码包分组；<span style="font-family:var(--mono);font-size:12px">↳</span> 表示内嵌在别的 loop 里的子循环。</p>
+      <p class="sub" id="bgSub"></p>
       <div class="owners" id="owners"></div>
     </section>
     <section class="block" id="detailBlock">
       <h2 id="detailHead"></h2>
-      <p class="sub">模型里除了 loop 和链路之外的东西，集中在这里：交接在哪、行为有没有被场景写下来、场景有没有真的绑到测试。</p>
+      <p class="sub" id="detailSub"></p>
       <div class="dcards" id="details"></div>
     </section>
     <section class="block" id="findBlock">
       <h2 id="findHead"></h2>
-      <p class="sub">最后是这张图上所有没守住的地方——记录在案的旧账，和代码或测试还没接上的节点。每一条都在等一个人拍板：修掉、删掉，还是先认下。</p>
+      <p class="sub" id="findSub"></p>
       <div id="findings"></div>
     </section>
   </div>
   <aside class="drawer" id="drawer">
-    <div class="dhint" id="dhint">← 点一条链路或一个 loop<br>详情会在这里展开</div>
+    <div class="dhint" id="dhint"></div>
     <div class="dbody" id="dbody" style="display:none"></div>
   </aside>
 </div>
@@ -1250,81 +1731,372 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
 (function(){
   var P=JSON.parse(document.getElementById("data").textContent);
   var D=P.data, M=P.meta, L=D.loops, A=P.arch;
+  // Interface copy for BOTH languages, shipped with the page. Nothing the model
+  // says is in here — see the OVERVIEW_I18N comment in views/overview-html.ts.
+  var T=${safeJson(OVERVIEW_I18N)};
   // Flows are shipped as an ARRAY (order is the model's), but three places need
   // them BY ID. Built here at the top rather than beside the flow renderer
   // because the outstanding ledger renders FIRST and makes its flow rows
   // clickable from this map.
-  var F={}; for(var fq=0;fq<D.flows.length;fq++) F[D.flows[fq].id]=D.flows[fq];
-  var VERDICT={met:"已落实",partial:"半落实",gap:"有缺口",dormant:"休眠",unknown:"未评"};
-  // Debt categories are a schema enum; the page shows people words. Same
-  // discipline as VERDICT/GAP below — an internal slug is never the primary
-  // information a reader gets. Falls back to the raw value so a future enum
-  // member degrades to visible-but-untranslated rather than blank.
-  var DEBTCAT={dead_state_machine:"死状态机",deferred:"已声明、未兑现",other:"其他"};
-  var GAP={
-    "no-anchor":"还没绑定到具体代码",
-    "anchor-missing":"绑定的代码文件已经不在了",
-    "no-scenario":"还没有场景描述它的行为",
-    "scenario-unverified":"写了场景，但没绑定测试",
-    "test-missing":"绑定的测试文件找不到了",
-    "queue-unmatched":"声明消费的队列，在代码里没找到",
-    "evidence-missing":"证据指向的文件不存在"
-  };
+  var F=Object.create(null); for(var fq=0;fq<D.flows.length;fq++) F[D.flows[fq].id]=D.flows[fq];
+
+  // Which language the page opens in: an explicit earlier choice wins, otherwise
+  // the browser's own preference decides. The storage key names this page, so a
+  // different codeontic page served from the same origin cannot flip it.
+  var LANGKEY="codeontic.overview.lang";
+  function storedLang(){ try{ return localStorage.getItem(LANGKEY); }catch(e){ return null; } }
+  var pref=storedLang();
+  var lang=(pref==="zh"||pref==="en") ? pref
+    : (String(navigator.language||"").toLowerCase().indexOf("zh")===0 ? "zh" : "en");
+  // U is the ACTIVE dictionary and the four maps below are its enum→words
+  // tables. render() reassigns all five, so every builder in this file reads the
+  // current language without having one passed to it.
+  var U=T[lang],VERDICT,DEBTCAT,GAP,KIND,RISK;
+  /**
+   * "{0}" substitution. Arguments must already be escaped, or be numbers.
+   *
+   * "{0|scenario|scenarios}" additionally renders the noun that agrees with the
+   * count. English needs it and Chinese does not, which is exactly why the two
+   * dictionaries hold independent strings rather than one string and a rule: the
+   * drawer read "1 scenarios" until this existed.
+   */
+  function fmt(s){var a=arguments;
+    return String(s).replace(/\\{(\\d)(?:\\|([^|}]*)\\|([^}]*))?\\}/g,function(w,i,one,many){
+      var v=a[+i+1]; if(v==null) return "";
+      return one===undefined?String(v):v+" "+(Number(v)===1?one:many);});}
   // Text-node serialization escapes & < > but NOT double quotes, so the extra
   // replace is what makes esc() safe in an ATTRIBUTE context too (e.g. the
   // data-loop below). Without it, any free-text value placed in an attribute
   // would be an injection point.
   function esc(s){var d=document.createElement("div");d.textContent=s==null?"":String(s);
     return d.innerHTML.replace(/"/g,"&quot;");}
-  function shortTitle(t){return String(t).replace(/^↳\\s*/,"");}
+  function shortTitle(s){return String(s).replace(/^↳\\s*/,"");}
+  /**
+   * risk_class in words. The only enum on this page that used to reach the
+   * reader raw — and it lands on the most prominent badge of every row in ④,
+   * the one section that answers "which handoffs exist at all".
+   */
+  function riskText(r){return (RISK&&RISK[r])||r;}
+  /**
+   * Two module names in the payload are OURS, not the model's: the buckets
+   * computeOverviewModel and computeArchitecture fall back to when a loop has no
+   * owner and when nothing can place a node. They are interface copy that
+   * happens to travel inside the data (an already-generated page must keep
+   * re-rendering from its own island, which holds whatever literal was written
+   * that day), so they are matched back to the active language here. Every other
+   * owner string is the user's own writing and passes through untouched.
+   */
+  function moduleLabel(s){
+    if(s===T.zh.arch.noOwner) return U.arch.noOwner;
+    if(s===T.zh.arch.unplaced) return U.arch.unplaced;
+    return s;
+  }
 
-  document.getElementById("subttl").textContent=M.title||"";
+  var langBox=document.getElementById("lang");
   var repoEl=document.getElementById("repo");
-  if(M.repoLabel&&M.repoHref){
-    repoEl.innerHTML='仓库 <a href="'+encodeURI(M.repoHref)+'" target="_blank" rel="noopener">'+esc(M.repoLabel)+' ↗</a>';
-  }else{ repoEl.style.display="none"; }
-  // A module box is drawn per code package; the unplaced bucket is one too, so
-  // the count is of boxes on the map and never disagrees with the picture.
-  document.getElementById("archHead").textContent=
-    "① 系统全景 —— "+A.modules.length+" 个代码包 · "+D.flows.length+" 个入口链路 · "+D.summary.loops+" 个 loop";
-  document.getElementById("flowsHead").textContent="② 用户旅程 —— "+D.flows.length+" 条端到端链路";
-  // Criterion, not conclusion (016 D7): this bucket means "no flow references
-  // it", which is not the same claim as "it is background machinery".
-  document.getElementById("bgHead").textContent="③ 不在任何链路里的 loop —— "+D.summary.background+" 个";
-  if(!D.background.length) document.getElementById("bgBlock").style.display="none";
-  if(!M.repoResolved){
-    document.getElementById("metawarn").innerHTML='<p class="warn">本页没有对照真实代码生成（缺 --repo-root）：落实状态只反映模型自己的声明，锚点和测试文件是否真的存在，并没有核实过。</p>';
-  }
-  var prov='';
-  if(M.generatedAt) prov+='生成于 <span class="mono">'+esc(M.generatedAt)+'</span>';
-  if(M.modelHash) prov+=(prov?' · ':'')+'模型指纹 <span class="mono">'+esc(String(M.modelHash).slice(0,12))+'</span>';
-  document.getElementById("foot").innerHTML='本页由 codeontic 从行为模型直接生成：所有 loop、链路、场景、锚点都来自 <span class="mono">.codeontic/model</span>，落实状态对照真实代码算出。改了模型或代码，重新生成这页就跟着变。'+
-    (prov?'<br>'+prov:'');
+  var drawer=document.getElementById("drawer"),hint=document.getElementById("dhint"),body=document.getElementById("dbody");
+  function put(id,text){document.getElementById(id).textContent=text;}
+  function putHtml(id,html){document.getElementById(id).innerHTML=html;}
 
-  var s=D.summary;
-  // Coverage declaration (016 T5). Stated before the map itself so a partial
-  // model cannot be read as the whole system — and stated WITH its caliber,
-  // because "how many files the model touched" is a proxy for how thoroughly
-  // the code was searched, never a measure of business completeness.
-  var cov='这张图绑定了 <b>'+s.anchoredFiles+'</b> 个代码文件';
-  if(M.commitTouch&&M.commitTouch.total>0){
-    cov+='；最近 <b>'+M.commitTouch.total+'</b> 次提交里，有 <b>'+M.commitTouch.hit+
-      '</b> 次改到了它们（'+Math.round(M.commitTouch.hit/M.commitTouch.total*100)+'%）';
-  }
-  cov+='。<span class="cal">这两个数字只说明这张图翻过了多少代码。<b>该建模的行为有没有漏画，机器数不出来</b>——要人对着业务自己清点。</span>';
-  document.getElementById("cov").innerHTML=cov;
+  /** Everything on the page, in the current language. Safe to call again. */
+  function render(){
+    U=T[lang]; VERDICT=U.verdict; DEBTCAT=U.debtcat; GAP=U.gapkind; KIND=U.kind; RISK=U.risk;
+    document.title=U.docTitle;
+    document.documentElement.lang=(lang==="zh"?"zh-Hans":"en");
+    var lb=langBox.querySelectorAll("button"),li,on;
+    for(li=0;li<lb.length;li++){
+      on=lb[li].getAttribute("data-lang")===lang;
+      lb[li].className=on?"on":"";
+      lb[li].setAttribute("aria-pressed",on?"true":"false");
+    }
+    langBox.setAttribute("aria-label",U.langLabel);
 
-  var stats=[["loop 总数",s.loops,""],["在链路里",s.inFlow,""],["不在任何链路里",s.background,""],
-    ["已落实",s.met,"met"],["半落实",s.partial,"partial"],["有缺口",s.gap,"gap"]];
-  if(s.debts) stats.push(["旧账",s.debts,""]);
-  // dormant loops are registered-but-unwired placeholders: never graded, so the
-  // exclusion is stated outright instead of leaving them silently missing.
-  if(s.dormant) stats.push(["休眠 · 不打分",s.dormant,""]);
-  // composition-only flows are graded through their loops, never on their own —
-  // stated outright for the same reason dormant loops are.
-  if(s.flowsExcluded) stats.push(["组合链路 · 不单独打分",s.flowsExcluded,""]);
-  document.getElementById("stats").innerHTML=stats.map(function(x){
-    return '<div class="stat '+x[2]+'"><span class="n">'+x[1]+'</span><span class="k">'+x[0]+'</span></div>';}).join("");
+    put("h1",U.h1);
+    putHtml("intro",U.intro);
+    putHtml("archSub",U.arch.sub);
+    putHtml("flowsSub",U.flows.sub);
+    putHtml("bgSub",U.bg.sub);
+    putHtml("detailSub",U.detail.sub);
+    putHtml("findSub",U.findings.sub);
+    put("lgFlow",U.arch.legendFlow); put("lgLoop",U.arch.legendLoop);
+    put("lgMet",U.arch.legendMet); put("lgPartial",U.arch.legendPartial);
+    put("lgGap",U.arch.legendGap); put("lgUnknown",U.arch.legendUnknown);
+    put("lgCross",U.arch.legendCross);
+    putHtml("dhint",U.drawer.hint);
+    put("subttl",M.title||"");
+    if(M.repoLabel&&M.repoHref){
+      repoEl.style.display="";
+      repoEl.innerHTML=esc(U.repoPrefix)+' <a href="'+encodeURI(M.repoHref)+
+        '" target="_blank" rel="noopener">'+esc(M.repoLabel)+' ↗</a>';
+    }else{ repoEl.style.display="none"; }
+    // A module box is drawn per code package; the unplaced bucket is one too, so
+    // the count is of boxes on the map and never disagrees with the picture.
+    // The catch-all bucket gets a box on the map but is NOT a code package —
+    // counting it made the header claim one more package than the repo has.
+    var realMods=0;
+    for(var mi=0;mi<A.modules.length;mi++) if(!A.modules[mi].residual) realMods++;
+    put("archHead",fmt(U.arch.head,realMods,D.flows.length,D.summary.loops));
+    put("flowsHead",fmt(U.flows.head,D.flows.length));
+    // Criterion, not conclusion (016 D7): this bucket means "no flow references
+    // it", which is not the same claim as "it is background machinery".
+    put("bgHead",fmt(U.bg.head,D.summary.background));
+    document.getElementById("bgBlock").style.display=D.background.length?"":"none";
+    putHtml("metawarn",M.repoResolved?"":'<p class="warn">'+esc(U.warnNoRepo)+'</p>');
+    var prov='';
+    if(M.generatedAt) prov+=fmt(U.provGenerated,esc(M.generatedAt));
+    if(M.modelHash) prov+=(prov?U.provSep:'')+fmt(U.provModel,esc(String(M.modelHash).slice(0,12)));
+    putHtml("foot",U.foot+(prov?'<br>'+prov:''));
+
+    var s=D.summary;
+    // Coverage declaration (016 T5). Stated before the map itself so a partial
+    // model cannot be read as the whole system — and stated WITH its caliber,
+    // because "how many files the model touched" is a proxy for how thoroughly
+    // the code was searched, never a measure of business completeness.
+    var cov=fmt(U.covFiles,s.anchoredFiles);
+    if(M.commitTouch&&M.commitTouch.total>0){
+      cov+=fmt(U.covCommits,M.commitTouch.total,M.commitTouch.hit,
+        Math.round(M.commitTouch.hit/M.commitTouch.total*100));
+    }
+    putHtml("cov",cov+U.covCaliber);
+
+    var stats=[[U.stats.loops,s.loops,""],[U.stats.inFlow,s.inFlow,""],
+      [U.stats.background,s.background,""],[U.stats.met,s.met,"met"],
+      [U.stats.partial,s.partial,"partial"],[U.stats.gap,s.gap,"gap"]];
+    if(s.debts) stats.push([U.stats.debts,s.debts,""]);
+    // dormant loops are registered-but-unwired placeholders: never graded, so the
+    // exclusion is stated outright instead of leaving them silently missing.
+    if(s.dormant) stats.push([U.stats.dormant,s.dormant,""]);
+    // composition-only flows are graded through their loops, never on their own —
+    // stated outright for the same reason dormant loops are.
+    if(s.flowsExcluded) stats.push([U.stats.flowsExcluded,s.flowsExcluded,""]);
+    putHtml("stats",stats.map(function(x){
+      return '<div class="stat '+x[2]+'"><span class="n">'+x[1]+'</span><span class="k">'+esc(x[0])+'</span></div>';}).join(""));
+
+    // ---- ⑤ outstanding ledger (016 T7) ---------------------------------
+    var nGap=0,nPartial=0;
+    for(var fi=0;fi<D.findings.length;fi++){
+      if(D.findings[fi].verdict==="gap") nGap++;
+      else if(D.findings[fi].verdict==="partial") nPartial++;
+    }
+    var findParts=[];
+    if(s.debts) findParts.push(fmt(U.findings.nDebts,s.debts));
+    if(nGap) findParts.push(fmt(U.findings.nGaps,nGap));
+    if(nPartial) findParts.push(fmt(U.findings.nPartials,nPartial));
+    put("findHead",fmt(U.findings.head,
+      findParts.length?findParts.join(U.findings.sep):U.findings.settled));
+    if(!D.findings.length){
+      putHtml("findings",'<div class="owner"><div class="dv soft">'+esc(U.findings.empty)+'</div></div>');
+    }else{
+      putHtml("findings",D.findings.map(function(f){
+        if(f.row==="debt"){
+          // A debt subject is free prose and routinely runs to a paragraph, so
+          // it is the card's opening SENTENCE rather than a bolded heading — a
+          // 200-character bold title is unreadable and crowds out the verdict.
+          var d='<div class="fnd debt"><div class="fh"><span class="fid">'+esc(f.id)+'</span>'+
+            '<span class="fbadge">'+esc(fmt(U.findings.debtBadge,DEBTCAT[f.category]||f.category))+'</span></div>';
+          d+=prose(f.title,"fsubj","");
+          d+=prose(f.reality,"fd",U.findings.reality);
+          if(f.claim) d+=prose(f.claim,"fd",esc(U.findings.claim));
+          var meta=[];
+          if(f.owner) meta.push(fmt(U.findings.owner,f.owner));
+          if(f.removalCondition) meta.push(fmt(U.findings.removal,f.removalCondition));
+          if(meta.length) d+='<p class="fmeta">'+esc(meta.join(U.findings.metaSep))+'</p>';
+          return d+'</div>';
+        }
+        // Loop and flow rows are clickable chips, so the drawer opens straight
+        // from the ledger; a junction has no drawer of its own, so it stays text.
+        var head=L[f.id]?chip(f.id):(F[f.id]?flowChip(f.id)
+          :'<span class="fid">'+esc(f.id)+'</span><span class="ft">'+esc(shortTitle(f.title))+'</span>');
+        var h='<div class="fnd '+f.verdict+'"><div class="fh">'+head+
+          '<span class="pill '+f.verdict+'"><i class="cd '+f.verdict+'"></i>'+esc(VERDICT[f.verdict])+'</span>'+
+          '<span class="fbadge">'+esc(KIND[f.kind]||f.kind)+'</span>';
+        if(f.code==="missing") h+='<span class="fbadge miss">'+esc(U.axis.codeMissing)+'</span>';
+        if(f.test==="missing") h+='<span class="fbadge miss">'+esc(U.axis.testMissing)+'</span>';
+        h+='</div>';
+        if(f.gaps&&f.gaps.length)
+          h+='<ul class="gaplist">'+f.gaps.map(function(g){
+            return '<li>'+esc(GAP[g.kind]||g.kind)+(g.detail?' —— '+esc(g.detail):'')+'</li>';}).join("")+'</ul>';
+        return h+'</div>';
+      }).join(""));
+    }
+
+    putHtml("flows",D.flows.map(function(f){
+      var h='<div class="flow"><div class="fh"><button class="fhead" data-flow="'+esc(f.id)+
+        '"><span class="fid">'+esc(f.id)+'</span><span class="ft">'+esc(f.title)+
+        '</span><span class="fchev">›</span></button>';
+      // A flow with its own anchors is graded and shows its verdict. A
+      // composition-only flow is graded THROUGH its loops — say that rather than
+      // leave the reader guessing why this card has no verdict.
+      if(f.verdict) h+='<span class="pill '+f.verdict+'"><i class="cd '+f.verdict+'"></i>'+esc(VERDICT[f.verdict])+'</span>';
+      else h+='<span class="pill unknown">'+esc(U.flows.composedPill)+'</span>';
+      h+='</div>';
+      if(f.summary) h+='<p class="fd">'+esc(f.summary)+'</p>';
+      if(f.verdict&&f.verdict!=="met")
+        h+='<div class="statusbox '+f.verdict+'"><span class="st">'+
+           esc(fmt(U.drawer.statusLead,VERDICT[f.verdict]))+'</span> '+esc(statusText(f))+
+           ((f.gaps&&f.gaps.length)?'<ul class="gaplist">'+f.gaps.map(function(g){
+             return '<li>'+esc(GAP[g.kind]||g.kind)+'</li>';}).join("")+'</ul>':'')+'</div>';
+      if(f.anchors&&f.anchors.length)
+        h+='<div class="fanchors"><span class="lbl">'+esc(U.flows.codeLabel)+'</span><div>'+
+           f.anchors.map(fileRow).join("")+'</div></div>';
+      if(f.steps&&f.steps.length) h+='<div class="chain">'+chainHtml(f.steps)+'</div>';
+      if(f.guards&&f.guards.length)
+        h+='<div class="guards"><span class="lbl">'+esc(U.flows.guardsLabel)+'</span>'+f.guards.map(chip).join("")+'</div>';
+      if(f.junctions&&f.junctions.length)
+        h+='<div class="juncs"><span class="lbl">'+esc(U.flows.junctionsLabel)+'</span>'+f.junctions.map(function(j){
+          return '<span class="jchip '+(j.verdict||'')+'">'+esc(j.title)+' · '+esc(riskText(j.risk))+' ('+esc(j.between.join("→"))+')'+
+            (j.verdict?' · '+esc(VERDICT[j.verdict]):'')+'</span>';}).join("")+'</div>';
+      return h+'</div>';
+    }).join(""));
+
+    putHtml("owners",D.background.map(function(o){
+      return '<div class="owner"><div class="oh"><span>'+esc(moduleLabel(o.owner))+'</span><span class="oc">'+o.ids.length+
+        '</span></div><div class="chain">'+o.ids.map(chip).join("")+'</div></div>';}).join(""));
+
+    // ---- ① the panorama ------------------------------------------------
+    // Geometry is computed in TS (computeArchitecture) and shipped in the JSON
+    // island; this only turns it into markup, so free text still goes through
+    // esc() and the page stays layout-deterministic (no measuring, nothing that
+    // depends on when fonts load or whether the drawer is open).
+    var g=[],i,m,e,n;
+    for(i=0;i<A.modules.length;i++){ m=A.modules[i];
+      var cap=Math.floor((m.w-24)/7.1);
+      var bits=[]; if(m.flows) bits.push(fmt(U.arch.unitFlows,m.flows));
+      if(m.loops) bits.push(fmt(U.arch.unitLoops,m.loops));
+      var sc=[]; if(m.met) sc.push(fmt(U.arch.unitMet,m.met));
+      if(m.partial) sc.push(fmt(U.arch.unitPartial,m.partial));
+      if(m.gap) sc.push(fmt(U.arch.unitGap,m.gap));
+      g.push('<rect class="mod" x="'+m.x+'" y="'+m.y+'" width="'+m.w+'" height="'+m.h+'" rx="11"/>'+
+        '<text class="modname" x="'+(m.x+12)+'" y="'+(m.y+19)+'">'+esc(trunc(moduleLabel(m.label),cap))+
+        '<title>'+esc(moduleLabel(m.key))+'</title></text>'+
+        '<text class="modmeta" x="'+(m.x+12)+'" y="'+(m.y+32)+'">'+
+        esc(trunc(bits.join(" · ")+(sc.length?"  ·  "+sc.join(" / "):""),Math.floor(cap*1.25)))+'</text>');
+    }
+    // Edges before nodes: a coupling line must never cover the thing it couples.
+    for(i=0;i<A.edges.length;i++){ e=A.edges[i];
+      g.push('<path class="ed '+esc(e.verdict||"")+(e.cross?" cross":"")+'" d="'+esc(e.d)+'">'+
+        '<title>'+esc(fmt(U.arch.edgeTitle,e.id,e.title,riskText(e.risk))+(e.cross?U.arch.edgeCross:"")+
+        (e.verdict?" · "+VERDICT[e.verdict]:""))+'</title></path>');
+    }
+    for(i=0;i<A.nodes.length;i++){ n=A.nodes[i];
+      var isFlow=n.kind==="flow";
+      g.push('<g class="an '+esc(n.kind)+' '+esc(n.verdict)+'" tabindex="0" role="button" data-'+
+        (isFlow?"flow":"loop")+'="'+esc(n.id)+'"'+(n.links.length?' data-hl="'+esc(n.links.join(" "))+'"':'')+'>'+
+        '<rect x="'+n.x+'" y="'+n.y+'" width="'+n.w+'" height="'+n.h+'" rx="'+(isFlow?n.h/2:3)+'"/>'+
+        '<text x="'+(n.x+n.w/2)+'" y="'+(n.y+n.h/2+4)+'">'+esc(trunc(n.id,8))+'</text>'+
+        '<title>'+esc(n.id+" · "+shortTitle(n.title)+" · "+(isFlow?U.arch.nodeFlow:U.arch.nodeLoop)+" · "+
+        (VERDICT[n.verdict]||n.verdict))+'</title></g>');
+    }
+    putHtml("arch",'<svg class="arch" viewBox="0 0 '+A.w+' '+A.h+'" role="img" aria-label="'+
+      esc(U.arch.aria)+'">'+g.join("")+'</svg>');
+    var pn=document.getElementById("prefixnote"),pnBits=[];
+    if(A.prefix) pnBits.push(fmt(U.arch.prefixNote,'<span class="mono">'+esc(A.prefix)+'</span>'));
+    // A junction whose endpoints are not on the map is a dangling reference, not
+    // a drawing limit — say so rather than letting the count quietly disagree
+    // with ④'s list.
+    if(A.droppedEdges) pnBits.push(esc(fmt(U.arch.dropped,A.droppedEdges)));
+    pn.style.display=pnBits.length?"":"none";
+    pn.innerHTML=pnBits.join(U.arch.noteSep);
+    // An empty model would render an empty frame that looks like a broken page.
+    document.querySelector(".arena").style.display=A.nodes.length?"":"none";
+
+    // ---- ④ modeling detail ----------------------------------------------
+    // Junctions arrive attached to every node they name, so they are deduped by
+    // id here exactly as the panorama does — one junction, one row.
+    var JX=Object.create(null),jn=0;
+    for(var lj in L) for(var ja=0;ja<L[lj].junctions.length;ja++){ JX[L[lj].junctions[ja].id]=L[lj].junctions[ja]; }
+    for(var jf=0;jf<D.flows.length;jf++) for(var jb=0;jb<D.flows[jf].junctions.length;jb++){
+      JX[D.flows[jf].junctions[jb].id]=D.flows[jf].junctions[jb]; }
+    for(var jk in JX) jn++;
+    // Scenario/test tally over BOTH node kinds — a flow carries its own scenarios
+    // (F2b), so counting only loops would under-report by a third on a real model.
+    var scn={total:0,tested:0,noTest:0,undef:0,broken:0,unchecked:0,graded:0,seen:Object.create(null)},noScn=[];
+    for(var ln in L) tallyScn(scn,noScn,L[ln],false);
+    for(var fn=0;fn<D.flows.length;fn++) tallyScn(scn,noScn,D.flows[fn],true);
+    var graded=scn.graded;
+    var QX=Object.create(null),qn=0,qUnmatched=Object.create(null);
+    for(var lq in L){
+      var qs=L[lq].queues||[];
+      for(var qi=0;qi<qs.length;qi++){ (QX[qs[qi]]=QX[qs[qi]]||[]).push(lq); }
+      for(var gq=0;gq<(L[lq].gaps||[]).length;gq++)
+      {
+        var qg=L[lq].gaps[gq];
+        if(qg.kind!=="queue-unmatched") continue;
+        // conformance writes the queue NAME into the detail. Keying this by LOOP
+        // threw that away: a loop declaring two queues with only one of them
+        // unmatched got BOTH rows badged as not found in the code.
+        var qm=/"([^"]*)"/.exec(qg.detail||"");
+        if(qm) qUnmatched[qm[1]]=1;
+      }
+    }
+    for(var qk in QX) qn++;
+    put("detailHead",fmt(U.detail.head,jn,scn.total)+(qn?fmt(U.detail.headQueues,qn):""));
+    var cards=[];
+    if(jn){
+      var jrows=[];
+      for(var jj in JX){ var j=JX[jj];
+        var ends=j.between.map(function(id){
+          var ti=L[id]?shortTitle(L[id].title):(F[id]?F[id].title:null);
+          return ti?id+" "+ti:id; });
+        jrows.push('<div class="jrow"><div class="jt">'+esc(j.title||j.id)+'</div><div class="jm">'+
+          '<span class="jchip '+(j.verdict||'')+'">'+esc(riskText(j.risk))+(j.verdict?' · '+esc(VERDICT[j.verdict]):'')+'</span>'+
+          esc(ends.join("  ↔  "))+'</div></div>');
+      }
+      cards.push('<div class="dcard"><h3>'+esc(fmt(U.detail.junctionsTitle,jn))+'</h3>'+
+        '<p class="note">'+esc(U.detail.junctionsNote)+'</p>'+
+        jrows.join("")+'</div>');
+    }
+    var scnBar=[],pct=function(n){return n/Math.max(1,scn.total)*100;};
+    if(scn.tested) scnBar.push('<i class="met" style="width:'+pct(scn.tested)+'%"></i>');
+    if(scn.noTest) scnBar.push('<i class="partial" style="width:'+pct(scn.noTest)+'%"></i>');
+    if(scn.unchecked) scnBar.push('<i class="none" style="width:'+pct(scn.unchecked)+'%"></i>');
+    if(scn.broken+scn.undef) scnBar.push('<i class="gap" style="width:'+pct(scn.broken+scn.undef)+'%"></i>');
+    cards.push('<div class="dcard"><h3>'+esc(U.detail.scnTitle)+'</h3>'+
+      '<p class="note">'+esc(U.detail.scnNote)+'</p>'+
+      '<div class="bar">'+(scnBar.join("")||'<i class="none" style="width:100%"></i>')+'</div>'+
+      '<div class="kv"><span>'+esc(U.detail.scnTotal)+'</span><b>'+scn.total+'</b></div>'+
+      '<div class="kv"><span>'+esc(U.detail.scnTested)+'</span><b>'+scn.tested+'</b></div>'+
+      (scn.unchecked?'<div class="kv"><span>'+esc(U.detail.scnUnchecked)+'</span><b>'+scn.unchecked+'</b></div>':'')+
+      '<div class="kv"><span>'+esc(U.detail.scnNoTest)+'</span><b'+(scn.noTest?' class="warnv"':'')+'>'+scn.noTest+'</b></div>'+
+      (scn.broken?'<div class="kv"><span>'+esc(U.detail.scnBroken)+'</span><b class="warnv">'+scn.broken+'</b></div>':'')+
+      (scn.undef?'<div class="kv"><span>'+esc(U.detail.scnUndef)+'</span><b class="warnv">'+scn.undef+'</b></div>':'')+
+      '<div class="kv"><span>'+esc(U.detail.scnNoneNodes)+'</span><b'+(noScn.length?' class="warnv"':'')+'>'+
+        esc(fmt(U.detail.scnNoneValue,noScn.length,graded))+'</b></div>'+
+      // Clickable, not a bare id list: an id alone tells a reader nothing, and
+      // "which behaviors have nothing written down" is exactly the question you
+      // want to follow into the drawer.
+      (noScn.length?'<div class="chain" style="margin-top:9px">'+
+        noScn.map(function(id){return L[id]?chip(id):flowChip(id);}).join("")+'</div>':'')+
+      // Scope, stated: junctions can carry scenarios too and are NOT counted
+      // here (the drawer payload does not carry them). Their own shortfalls are
+      // graded and land in ⑤, so nothing is lost — but a number whose scope is
+      // unstated is a number that will be read as the whole model's.
+      '<p class="note" style="margin:10px 0 0">'+U.detail.scnScope+'</p>'+
+      '</div>');
+    if(qn){
+      var qrows=[];
+      for(var qq in QX){
+        var owners=QX[qq],bad=qUnmatched[qq]?1:0;
+        qrows.push('<div class="jrow"><div class="jt">'+esc(qq)+
+          (bad?' <span class="fbadge miss">'+esc(U.detail.queueMissing)+'</span>':'')+
+          '</div><div class="jm">'+owners.map(function(id){return esc(id+" "+shortTitle(L[id].title));}).join("  ·  ")+
+          '</div></div>');
+      }
+      cards.push('<div class="dcard"><h3>'+esc(fmt(U.detail.queuesTitle,qn))+'</h3>'+
+        '<p class="note">'+esc(U.detail.queuesNote)+'</p>'+
+        qrows.join("")+'</div>');
+    }
+    putHtml("details",cards.join(""));
+
+    // The drawer is a claim about what is open, and a language switch must not
+    // silently drop it: re-open whatever was open, now in the new language —
+    // without moving the page or the drawer's own scroll (see restoring).
+    if(cur){
+      restoring=true;
+      if(cur.k==="loop") showLoop(cur.id); else showFlow(cur.id);
+      restoring=false;
+    }
+  }
 
   function chip(id){
     var l=L[id]; if(!l) return '<span class="chip"><span class="cid">'+esc(id)+'</span></span>';
@@ -1342,9 +2114,6 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
     return '<button class="chip" data-flow="'+esc(id)+'"><i class="cd '+(f.verdict||"unknown")+'"></i>'+
       '<span class="cid">'+esc(id)+'</span><span class="ct">'+esc(f.title)+'</span></button>';
   }
-
-  // ---- ⑤ outstanding ledger (016 T7) -----------------------------------
-  var KIND={loop:"loop",flow:"链路",junction:"交接点"};
   /**
    * A debt body is unbounded free prose — on a real model these run past 900
    * characters and three of them in a row turned this section into a wall.
@@ -1355,268 +2124,50 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
   function prose(text,cls,lead){
     var s=text==null?"":String(text);
     if(s.length<=CLAMP_AT) return '<p class="'+cls+'">'+(lead||"")+esc(s)+'</p>';
+    var open=esc(fmt(U.findings.expand,s.length));
     return '<div class="'+cls+'">'+(lead||"")+'<span class="clamp">'+esc(s)+'</span>'+
-      '<button class="more" data-open="展开全文（'+s.length+' 字）" data-shut="收起">展开全文（'+
-      s.length+' 字）</button></div>';
+      '<button class="more" data-open="'+open+'" data-shut="'+esc(U.findings.collapse)+'">'+open+'</button></div>';
   }
-  document.addEventListener("click",function(e){
-    var mb=e.target.closest?e.target.closest(".more"):null;
-    if(!mb) return;
-    var box=mb.parentNode.querySelector("span");
-    if(!box) return;
-    var open=box.classList.toggle("clamp");
-    mb.textContent=open?mb.getAttribute("data-open"):mb.getAttribute("data-shut");
-  });
-  var nGap=0,nPartial=0;
-  for(var fi=0;fi<D.findings.length;fi++){
-    if(D.findings[fi].verdict==="gap") nGap++;
-    else if(D.findings[fi].verdict==="partial") nPartial++;
-  }
-  var findParts=[];
-  if(s.debts) findParts.push(s.debts+" 笔旧账");
-  if(nGap) findParts.push(nGap+" 个有缺口");
-  if(nPartial) findParts.push(nPartial+" 个半落实");
-  document.getElementById("findHead").textContent=
-    "⑤ 欠账 —— "+(findParts.length?findParts.join(" · "):"已结清");
-  if(!D.findings.length){
-    document.getElementById("findings").innerHTML=
-      '<div class="owner"><div class="dv soft">没有欠账——打过分的节点全部已落实。</div></div>';
-  }else{
-    document.getElementById("findings").innerHTML=D.findings.map(function(f){
-      if(f.row==="debt"){
-        // A debt subject is free prose and routinely runs to a paragraph, so
-        // it is the card's opening SENTENCE rather than a bolded heading — a
-        // 200-character bold title is unreadable and crowds out the verdict.
-        var d='<div class="fnd debt"><div class="fh"><span class="fid">'+esc(f.id)+'</span>'+
-          '<span class="fbadge">旧账 · '+esc(DEBTCAT[f.category]||f.category)+'</span></div>';
-        d+=prose(f.title,"fsubj","");
-        d+=prose(f.reality,"fd","<b>实际情况：</b>");
-        if(f.claim) d+=prose(f.claim,"fd","曾经声称：");
-        var meta=[];
-        if(f.owner) meta.push("归属 "+f.owner);
-        if(f.removalCondition) meta.push("退场条件："+f.removalCondition);
-        if(meta.length) d+='<p class="fmeta">'+esc(meta.join(" · "))+'</p>';
-        return d+'</div>';
-      }
-      // Loop and flow rows are clickable chips, so the drawer opens straight
-      // from the ledger; a junction has no drawer of its own, so it stays text.
-      var head=L[f.id]?chip(f.id):(F[f.id]?flowChip(f.id)
-        :'<span class="fid">'+esc(f.id)+'</span><span class="ft">'+esc(shortTitle(f.title))+'</span>');
-      var h='<div class="fnd '+f.verdict+'"><div class="fh">'+head+
-        '<span class="pill '+f.verdict+'"><i class="cd '+f.verdict+'"></i>'+VERDICT[f.verdict]+'</span>'+
-        '<span class="fbadge">'+esc(KIND[f.kind]||f.kind)+'</span>';
-      if(f.code==="missing") h+='<span class="fbadge miss">代码 ✗</span>';
-      if(f.test==="missing") h+='<span class="fbadge miss">测试 ✗</span>';
-      h+='</div>';
-      if(f.gaps&&f.gaps.length)
-        h+='<ul class="gaplist">'+f.gaps.map(function(g){
-          return '<li>'+esc(GAP[g.kind]||g.kind)+(g.detail?' —— '+esc(g.detail):'')+'</li>';}).join("")+'</ul>';
-      return h+'</div>';
-    }).join("");
-  }
-
-  document.getElementById("flows").innerHTML=D.flows.map(function(f){
-    var h='<div class="flow"><div class="fh"><button class="fhead" data-flow="'+esc(f.id)+
-      '"><span class="fid">'+esc(f.id)+'</span><span class="ft">'+esc(f.title)+
-      '</span><span class="fchev">›</span></button>';
-    // A flow with its own anchors is graded and shows its verdict. A
-    // composition-only flow is graded THROUGH its loops — say that rather than
-    // leave the reader guessing why this card has no verdict.
-    if(f.verdict) h+='<span class="pill '+f.verdict+'"><i class="cd '+f.verdict+'"></i>'+VERDICT[f.verdict]+'</span>';
-    else h+='<span class="pill unknown">组合链路</span>';
-    h+='</div>';
-    if(f.summary) h+='<p class="fd">'+esc(f.summary)+'</p>';
-    if(f.verdict&&f.verdict!=="met")
-      h+='<div class="statusbox '+f.verdict+'"><span class="st">'+VERDICT[f.verdict]+'。</span> '+esc(statusText(f))+
-         ((f.gaps&&f.gaps.length)?'<ul class="gaplist">'+f.gaps.map(function(g){
-           return '<li>'+esc(GAP[g.kind]||g.kind)+'</li>';}).join("")+'</ul>':'')+'</div>';
-    if(f.anchors&&f.anchors.length)
-      h+='<div class="fanchors"><span class="lbl">代码</span><div>'+f.anchors.map(fileRow).join("")+'</div></div>';
-    if(f.steps&&f.steps.length) h+='<div class="chain">'+chainHtml(f.steps)+'</div>';
-    if(f.guards&&f.guards.length)
-      h+='<div class="guards"><span class="lbl">看门狗</span>'+f.guards.map(chip).join("")+'</div>';
-    if(f.junctions&&f.junctions.length)
-      h+='<div class="juncs"><span class="lbl">交接点</span>'+f.junctions.map(function(j){
-        return '<span class="jchip '+(j.verdict||'')+'">'+esc(j.title)+' · '+esc(j.risk)+' ('+esc(j.between.join("→"))+')'+
-          (j.verdict?' · '+VERDICT[j.verdict]:'')+'</span>';}).join("")+'</div>';
-    return h+'</div>';
-  }).join("");
-
-  document.getElementById("owners").innerHTML=D.background.map(function(o){
-    return '<div class="owner"><div class="oh"><span>'+esc(o.owner)+'</span><span class="oc">'+o.ids.length+
-      '</span></div><div class="chain">'+o.ids.map(chip).join("")+'</div></div>';}).join("");
-
-  // ---- ① the panorama --------------------------------------------------
-  // Geometry is computed in TS (computeArchitecture) and shipped in the JSON
-  // island; this only turns it into markup, so free text still goes through
-  // esc() and the page stays layout-deterministic (no measuring, nothing that
-  // depends on when fonts load or whether the drawer is open).
   function trunc(s,n){s=String(s);return s.length>n?s.slice(0,n-1)+"…":s;}
-  (function(){
-    var g=[],i,m,e,n;
-    for(i=0;i<A.modules.length;i++){ m=A.modules[i];
-      var cap=Math.floor((m.w-24)/7.1);
-      var bits=[]; if(m.flows) bits.push(m.flows+" 入口"); if(m.loops) bits.push(m.loops+" loop");
-      var sc=[]; if(m.met) sc.push(m.met+" 已落实"); if(m.partial) sc.push(m.partial+" 半落实");
-      if(m.gap) sc.push(m.gap+" 有缺口");
-      g.push('<rect class="mod" x="'+m.x+'" y="'+m.y+'" width="'+m.w+'" height="'+m.h+'" rx="11"/>'+
-        '<text class="modname" x="'+(m.x+12)+'" y="'+(m.y+19)+'">'+esc(trunc(m.label,cap))+
-        '<title>'+esc(m.key)+'</title></text>'+
-        '<text class="modmeta" x="'+(m.x+12)+'" y="'+(m.y+32)+'">'+
-        esc(trunc(bits.join(" · ")+(sc.length?"  ·  "+sc.join(" / "):""),Math.floor(cap*1.25)))+'</text>');
-    }
-    // Edges before nodes: a coupling line must never cover the thing it couples.
-    for(i=0;i<A.edges.length;i++){ e=A.edges[i];
-      g.push('<path class="ed '+esc(e.verdict||"")+(e.cross?" cross":"")+'" d="'+esc(e.d)+'">'+
-        '<title>'+esc("交接点 "+e.id+"："+e.title+" · "+e.risk+(e.cross?" · 跨包":"")+
-        (e.verdict?" · "+VERDICT[e.verdict]:""))+'</title></path>');
-    }
-    for(i=0;i<A.nodes.length;i++){ n=A.nodes[i];
-      var isFlow=n.kind==="flow";
-      g.push('<g class="an '+esc(n.kind)+' '+esc(n.verdict)+'" tabindex="0" role="button" data-'+
-        (isFlow?"flow":"loop")+'="'+esc(n.id)+'"'+(n.links.length?' data-hl="'+esc(n.links.join(" "))+'"':'')+'>'+
-        '<rect x="'+n.x+'" y="'+n.y+'" width="'+n.w+'" height="'+n.h+'" rx="'+(isFlow?n.h/2:3)+'"/>'+
-        '<text x="'+(n.x+n.w/2)+'" y="'+(n.y+n.h/2+4)+'">'+esc(trunc(n.id,8))+'</text>'+
-        '<title>'+esc(n.id+" · "+shortTitle(n.title)+" · "+(isFlow?"入口链路":"loop")+" · "+
-        (VERDICT[n.verdict]||n.verdict))+'</title></g>');
-    }
-    document.getElementById("arch").innerHTML=
-      '<svg class="arch" viewBox="0 0 '+A.w+' '+A.h+'" role="img" aria-label="系统全景图">'+g.join("")+'</svg>';
-  })();
-  var pn=document.getElementById("prefixnote"),pnBits=[];
-  if(A.prefix) pnBits.push('包名省略了共同前缀 <span class="mono">'+esc(A.prefix)+'</span>');
-  // A junction whose endpoints are not on the map is a dangling reference, not
-  // a drawing limit — say so rather than letting the count quietly disagree
-  // with ④'s list.
-  if(A.droppedEdges) pnBits.push(A.droppedEdges+' 个交接点没画出来：它连的 id 在模型里不存在');
-  if(pnBits.length) pn.innerHTML=pnBits.join('；'); else pn.style.display="none";
-  // An empty model would render an empty frame that looks like a broken page.
-  if(!A.nodes.length) document.querySelector(".arena").style.display="none";
-  // Hovering an entrance lights the loops it walks through — the one relation
-  // the static picture cannot draw without turning into spaghetti (a flow
-  // touches up to 3 loops and 19 flows would mean ~30 more lines).
-  var archWrap=document.getElementById("arch");
-  function archClear(){
-    var svgEl=archWrap.firstChild; if(!svgEl||!svgEl.classList) return;
-    svgEl.classList.remove("dim");
-    var hl=svgEl.querySelectorAll(".hl"); for(var i=0;i<hl.length;i++) hl[i].classList.remove("hl");
-  }
-  archWrap.addEventListener("mouseover",function(ev){
-    var svgEl=archWrap.firstChild; if(!svgEl||!svgEl.classList) return;
-    var t=ev.target.closest?ev.target.closest(".an[data-hl]"):null;
-    archClear();
-    if(!t) return;
-    // Attribute lookup by scan, not by selector string: a model id is free text
-    // and would break (or inject into) a querySelector.
-    var want={},ids=t.getAttribute("data-hl").split(" "),i;
-    for(i=0;i<ids.length;i++) want[ids[i]]=1;
-    var all=svgEl.querySelectorAll(".an");
-    for(i=0;i<all.length;i++){
-      var id=all[i].getAttribute("data-loop");
-      if(id&&want[id]) all[i].classList.add("hl");
-    }
-    t.classList.add("hl");
-    svgEl.classList.add("dim");
-  });
-  archWrap.addEventListener("mouseleave",archClear);
-
-  // ---- ④ modeling detail ------------------------------------------------
-  // Junctions arrive attached to every node they name, so they are deduped by
-  // id here exactly as the panorama does — one junction, one row.
-  var JX={},jn=0;
-  for(var lj in L) for(var ja=0;ja<L[lj].junctions.length;ja++){ JX[L[lj].junctions[ja].id]=L[lj].junctions[ja]; }
-  for(var jf=0;jf<D.flows.length;jf++) for(var jb=0;jb<D.flows[jf].junctions.length;jb++){
-    JX[D.flows[jf].junctions[jb].id]=D.flows[jf].junctions[jb]; }
-  for(var jk in JX) jn++;
-  // Scenario/test tally over BOTH node kinds — a flow carries its own scenarios
-  // (F2b), so counting only loops would under-report by a third on a real model.
-  var scn={total:0,tested:0,noTest:0,undef:0,broken:0},noScn=[],graded=0;
-  function tallyScn(node,isFlow){
-    if(isFlow&&node.verdict===null&&(!node.scenarios||!node.scenarios.length)&&node.steps&&node.steps.length) return;
-    graded++;
+  /** One node's scenarios folded into the running tally. The tally object is
+   *  passed in (not closed over) so a re-render starts from zero every time. */
+  function tallyScn(scn,noScn,node,isFlow){
+    // Who is NOT in this tally, and why the verdict is the authority on it:
+    // a composition-only flow is graded through its loops (verdict null), and a
+    // dormant loop is registered-but-unwired (verdict "dormant") — the stats row
+    // says so outright. Neither belongs in a "has no scenario" punch list.
+    // Reading the step list instead of the verdict got this wrong for a flow
+    // composed only via guarded_by, which schema/model.ts also leaves ungraded.
+    if(isFlow&&node.verdict===null) return;
+    if(!isFlow&&node.verdict==="dormant") return;
+    scn.graded++;
     if(!node.scenarios||!node.scenarios.length){ noScn.push(node.id); return; }
     for(var i=0;i<node.scenarios.length;i++){
-      var sc=node.scenarios[i]; scn.total++;
+      var sc=node.scenarios[i];
+      // By scenario ID, not by reference: one scenario referenced from two nodes
+      // is ONE scenario. Counting references reported more scenarios than the
+      // model contains (pi: 45 references, 44 real scenarios).
+      if(scn.seen[sc.id]) continue;
+      scn.seen[sc.id]=1;
+      // A dangling id is a scenario nobody ever wrote. Counting it in the total
+      // claimed one scenario written AND one scenario missing, from one row.
       if(sc.missing){ scn.undef++; continue; }
+      scn.total++;
       if(!sc.tests||!sc.tests.length){ scn.noTest++; continue; }
-      // A binding whose file is gone is NOT a test. Counting it as one put the
-      // dead binding inside the biggest, greenest number on the card — the
-      // exact shape of lie this page exists to prevent.
-      var bad=0;
-      for(var t=0;t<sc.tests.length;t++) if(sc.tests[t].ok===false) bad++;
-      if(bad) scn.broken++; else scn.tested++;
+      // THREE outcomes, not two. ok===false is a dead binding; ok===null is NOT
+      // VERIFIED (no --repo-root, or a table-style anchor with no file at all).
+      // Folding null into "bound to a test that really exists" made every
+      // binding read as verified on a run that checked nothing.
+      var bad=0,unk=0;
+      for(var t=0;t<sc.tests.length;t++){
+        if(sc.tests[t].ok===false) bad++; else if(sc.tests[t].ok===null) unk++;
+      }
+      if(bad) scn.broken++; else if(unk) scn.unchecked++; else scn.tested++;
     }
   }
-  for(var ln in L) tallyScn(L[ln],false);
-  for(var fn=0;fn<D.flows.length;fn++) tallyScn(D.flows[fn],true);
-  var QX={},qn=0,qUnmatched={};
-  for(var lq in L){
-    var qs=L[lq].queues||[];
-    for(var qi=0;qi<qs.length;qi++){ (QX[qs[qi]]=QX[qs[qi]]||[]).push(lq); }
-    for(var gq=0;gq<(L[lq].gaps||[]).length;gq++)
-      if(L[lq].gaps[gq].kind==="queue-unmatched") qUnmatched[lq]=1;
-  }
-  for(var qk in QX) qn++;
-  document.getElementById("detailHead").textContent=
-    "④ 建模细节 —— "+jn+" 个交接点 · "+scn.total+" 个场景（loop 和链路上的）"+(qn?" · "+qn+" 个队列":"");
-  var cards=[];
-  if(jn){
-    var jrows=[];
-    for(var jj in JX){ var j=JX[jj];
-      var ends=j.between.map(function(id){
-        var t=L[id]?shortTitle(L[id].title):(F[id]?F[id].title:null);
-        return t?id+" "+t:id; });
-      jrows.push('<div class="jrow"><div class="jt">'+esc(j.title||j.id)+'</div><div class="jm">'+
-        '<span class="jchip '+(j.verdict||'')+'">'+esc(j.risk)+(j.verdict?' · '+VERDICT[j.verdict]:'')+'</span>'+
-        esc(ends.join("  ↔  "))+'</div></div>');
-    }
-    cards.push('<div class="dcard"><h3>交接点 · '+jn+' 个</h3>'+
-      '<p class="note">两个东西交棒的位置。模型单独记录、单独打分，因为出问题最多的就是这里。</p>'+
-      jrows.join("")+'</div>');
-  }
-  var scnBar=[],pct=function(n){return n/Math.max(1,scn.total)*100;};
-  if(scn.tested) scnBar.push('<i class="met" style="width:'+pct(scn.tested)+'%"></i>');
-  if(scn.noTest) scnBar.push('<i class="partial" style="width:'+pct(scn.noTest)+'%"></i>');
-  if(scn.broken+scn.undef) scnBar.push('<i class="gap" style="width:'+pct(scn.broken+scn.undef)+'%"></i>');
-  cards.push('<div class="dcard"><h3>场景与测试覆盖</h3>'+
-    '<p class="note">场景就是用业务的话写下的一条行为：给定…当…则…。它必须指向一个真实存在的测试文件，机器才认。</p>'+
-    '<div class="bar">'+(scnBar.join("")||'<i class="none" style="width:100%"></i>')+'</div>'+
-    '<div class="kv"><span>写下来的场景</span><b>'+scn.total+'</b></div>'+
-    '<div class="kv"><span>绑到了真实存在的测试</span><b>'+scn.tested+'</b></div>'+
-    '<div class="kv"><span>写了场景、没绑测试</span><b'+(scn.noTest?' class="warnv"':'')+'>'+scn.noTest+'</b></div>'+
-    (scn.broken?'<div class="kv"><span>绑了测试、文件已不在</span><b class="warnv">'+scn.broken+'</b></div>':'')+
-    (scn.undef?'<div class="kv"><span>引用了不存在的场景</span><b class="warnv">'+scn.undef+'</b></div>':'')+
-    '<div class="kv"><span>一个场景都没有的节点</span><b'+(noScn.length?' class="warnv"':'')+'>'+
-      noScn.length+' / 共 '+graded+' 个</b></div>'+
-    // Clickable, not a bare id list: an id alone tells a reader nothing, and
-    // "which behaviors have nothing written down" is exactly the question you
-    // want to follow into the drawer.
-    (noScn.length?'<div class="chain" style="margin-top:9px">'+
-      noScn.map(function(id){return L[id]?chip(id):flowChip(id);}).join("")+'</div>':'')+
-    // Scope, stated: junctions can carry scenarios too and are NOT counted
-    // here (the drawer payload does not carry them). Their own shortfalls are
-    // graded and land in ⑤, so nothing is lost — but a number whose scope is
-    // unstated is a number that will be read as the whole model's.
-    '<p class="note" style="margin:10px 0 0">以上只数 loop 和链路自己的场景；交接点也能带场景，这里没有计入——它们缺什么，看 ⑤ 欠账。<br>另外，机器只核对测试文件在不在、指得对不对。<b>它不判断这个测试是否真的测到了场景说的事</b>——那要跑你的代码，门禁永远不跑。</p>'+
-    '</div>');
-  if(qn){
-    var qrows=[];
-    for(var qq in QX){
-      var owners=QX[qq],bad=0;
-      for(var oi=0;oi<owners.length;oi++) if(qUnmatched[owners[oi]]) bad++;
-      qrows.push('<div class="jrow"><div class="jt">'+esc(qq)+(bad?' <span class="fbadge miss">代码里没找到</span>':'')+
-        '</div><div class="jm">'+owners.map(function(id){return esc(id+" "+shortTitle(L[id].title));}).join("  ·  ")+
-        '</div></div>');
-    }
-    cards.push('<div class="dcard"><h3>队列与消费关系 · '+qn+' 个</h3>'+
-      '<p class="note">模型声明「这个 loop 消费这个队列」，适配器再去代码里找同名的队列对账。</p>'+
-      qrows.join("")+'</div>');
-  }
-  document.getElementById("details").innerHTML=cards.join("");
 
-  var drawer=document.getElementById("drawer"),hint=document.getElementById("dhint"),body=document.getElementById("dbody");
   function fileRow(r){
-    var ex=r.ok===null?'':'<span class="ex '+(r.ok?'y':'n')+'">'+(r.ok?'✓ 存在':'✗ 缺失')+'</span>';
+    var ex=r.ok===null?'':'<span class="ex '+(r.ok?'y':'n')+'">'+esc(r.ok?U.file.exists:U.file.missing)+'</span>';
     var label=esc(r.ref);
     // link to the real file on the git host when a blob base is known and this
     // is a file-symbol anchor (table anchors have no file → plain text).
@@ -1626,37 +2177,40 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
     return '<div class="file">'+ex+inner+'</div>';
   }
   function statusText(l){
-    if(l.verdict==="met") return "代码和测试都接上了：这个行为绑定在真实代码上，也有测试守着。";
-    if(l.verdict==="partial") return "代码接上了，测试还有缺口。缺什么，列在下面。";
-    if(l.verdict==="gap") return "模型写下了这个行为，但代码或测试还没接上。这笔账记在实现那边——不是模型写错了，是代码还没兑现。";
-    if(l.verdict==="dormant") return "休眠：登记了但还没接线，不参与打分。";
+    if(l.verdict==="met") return U.status.met;
+    if(l.verdict==="partial") return U.status.partial;
+    if(l.verdict==="gap") return U.status.gap;
+    if(l.verdict==="dormant") return U.status.dormant;
     return "";
   }
   function showLoop(id){
     var l=L[id]; if(!l) return;
+    cur={k:"loop",id:id};
     var v=l.verdict||"unknown";
     var h='<button class="dclose" onclick="__ovClose()">✕</button>';
     h+='<div class="dtop"><span class="did">'+esc(l.id)+'</span><span class="dtitle">'+esc(shortTitle(l.title))+'</span></div>';
-    h+='<div><span class="pill '+v+'"><i class="cd '+v+'"></i>'+VERDICT[v]+'</span>'+
-       (l.embedded&&l.parent?' <span class="pill unknown">内嵌于 '+esc(l.parent)+'</span>':'')+'</div>';
-    h+='<div class="drow"><div class="dk">在做什么</div><div class="dv">'+esc(shortTitle(l.title))+
-       '</div><div class="dv soft" style="margin-top:6px">状态流转：'+esc(l.boundary)+'</div></div>';
-    h+='<div class="drow"><div class="dk">落实到什么程度</div><div class="statusbox '+v+'">'+
-       '<span class="st">'+VERDICT[v]+'。</span> '+esc(statusText(l));
+    h+='<div><span class="pill '+v+'"><i class="cd '+v+'"></i>'+esc(VERDICT[v])+'</span>'+
+       (l.embedded&&l.parent?' <span class="pill unknown">'+esc(fmt(U.drawer.embeddedIn,l.parent))+'</span>':'')+'</div>';
+    h+='<div class="drow"><div class="dk">'+esc(U.drawer.doing)+'</div><div class="dv">'+esc(shortTitle(l.title))+
+       '</div><div class="dv soft" style="margin-top:6px">'+esc(fmt(U.drawer.boundary,l.boundary))+'</div></div>';
+    h+='<div class="drow"><div class="dk">'+esc(U.drawer.status)+'</div><div class="statusbox '+v+'">'+
+       '<span class="st">'+esc(fmt(U.drawer.statusLead,VERDICT[v]))+'</span> '+esc(statusText(l));
     if(l.gaps&&l.gaps.length)
       h+='<ul class="gaplist">'+l.gaps.map(function(g){return '<li>'+esc(GAP[g.kind]||g.kind)+'</li>';}).join("")+'</ul>';
     h+='</div></div>';
-    h+='<div class="drow"><div class="dk">归属</div><div class="dv soft">'+esc(l.owner||"（未标归属）")+'</div></div>';
-    h+='<div class="drow"><div class="dk">代码在哪</div>';
-    h+=(l.anchors&&l.anchors.length)?l.anchors.map(fileRow).join(""):'<div class="none">还没绑定到具体代码。</div>';
+    h+='<div class="drow"><div class="dk">'+esc(U.drawer.owner)+'</div><div class="dv soft">'+
+       esc(l.owner||U.drawer.ownerNone)+'</div></div>';
+    h+='<div class="drow"><div class="dk">'+esc(U.drawer.codeWhere)+'</div>';
+    h+=(l.anchors&&l.anchors.length)?l.anchors.map(fileRow).join("")
+      :'<div class="none">'+esc(U.drawer.codeNone)+'</div>';
     h+='</div>';
     if(l.queues&&l.queues.length)
-      h+='<div class="drow"><div class="dk">消费的队列</div><div>'+
+      h+='<div class="drow"><div class="dk">'+esc(U.drawer.queues)+'</div><div>'+
          l.queues.map(function(q){return '<span class="queue">'+esc(q)+'</span>';}).join("")+'</div></div>';
-    h+=scenarioRows(l.scenarios,"还没有场景描述它的行为。");
-    h+=junctionRows(l.junctions,"相关交接点");
+    h+=scenarioRows(l.scenarios,U.drawer.scnNoneLoop);
+    h+=junctionRows(l.junctions,U.drawer.junctionsRelated);
     if(l.notes)
-      h+='<div class="drow"><div class="dk">维护者备注</div><div class="dv soft" style="white-space:pre-wrap;font-size:13px">'+esc(l.notes)+'</div></div>';
+      h+='<div class="drow"><div class="dk">'+esc(U.drawer.notes)+'</div><div class="dv soft" style="white-space:pre-wrap;font-size:13px">'+esc(l.notes)+'</div></div>';
     openDrawer(h,'[data-loop="'+id+'"]');
   }
   /**
@@ -1672,62 +2226,63 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
    */
   function showFlow(id){
     var f=F[id]; if(!f) return;
+    cur={k:"flow",id:id};
     var v=f.verdict||"unknown";
     var h='<button class="dclose" onclick="__ovClose()">✕</button>';
     h+='<div class="dtop"><span class="did">'+esc(f.id)+'</span><span class="dtitle">'+esc(f.title)+'</span></div>';
-    h+='<div><span class="pill '+v+'">'+(f.verdict?'<i class="cd '+v+'"></i>'+VERDICT[v]:'组合链路')+'</span>'+
-       ' <span class="fbadge">链路</span>';
+    h+='<div><span class="pill '+v+'">'+(f.verdict?'<i class="cd '+v+'"></i>'+esc(VERDICT[v]):esc(U.flows.composedPill))+'</span>'+
+       ' <span class="fbadge">'+esc(U.drawer.flowBadge)+'</span>';
     // The two conformance axes, spelled out. The card only ever showed the
     // combined verdict, so "partial" left the reader to guess WHICH half is
     // missing — the drawer is where that stops being a guess.
-    if(f.code) h+=' <span class="fbadge'+(f.code==="missing"?' miss':'')+'">代码 '+(f.code==="missing"?'✗':'✓')+'</span>';
-    if(f.test) h+=' <span class="fbadge'+(f.test==="missing"?' miss':'')+'">测试 '+(f.test==="missing"?'✗':'✓')+'</span>';
+    if(f.code) h+=' <span class="fbadge'+(f.code==="missing"?' miss':'')+'">'+
+      esc(f.code==="missing"?U.axis.codeMissing:U.axis.codeOk)+'</span>';
+    if(f.test) h+=' <span class="fbadge'+(f.test==="missing"?' miss':'')+'">'+
+      esc(f.test==="missing"?U.axis.testMissing:U.axis.testOk)+'</span>';
     h+='</div>';
-    if(f.summary) h+='<div class="drow"><div class="dk">在做什么</div><div class="dv">'+esc(f.summary)+'</div></div>';
-    h+='<div class="drow"><div class="dk">落实到什么程度</div><div class="statusbox '+v+'">';
+    if(f.summary) h+='<div class="drow"><div class="dk">'+esc(U.drawer.doing)+'</div><div class="dv">'+esc(f.summary)+'</div></div>';
+    h+='<div class="drow"><div class="dk">'+esc(U.drawer.status)+'</div><div class="statusbox '+v+'">';
     if(f.verdict){
-      h+='<span class="st">'+VERDICT[v]+'。</span> '+esc(statusText(f));
+      h+='<span class="st">'+esc(fmt(U.drawer.statusLead,VERDICT[v]))+'</span> '+esc(statusText(f));
       if(f.gaps&&f.gaps.length)
         h+='<ul class="gaplist">'+f.gaps.map(function(g){return '<li>'+esc(GAP[g.kind]||g.kind)+'</li>';}).join("")+'</ul>';
     }else{
       // A composed flow is NOT ungraded-by-oversight: its parts carry the score
       // and double-counting them here would inflate the headline. Say which,
       // and point at where the score actually lives.
-      h+='<span class="st">这是一条组合链路。</span>它只负责把下面几个 loop 串起来，自己不单独打分。'+
-         '它落实到什么程度，看每一步 loop 自己的圆点。';
+      h+='<span class="st">'+esc(U.drawer.composedLead)+'</span>'+esc(U.drawer.composedBody);
     }
     h+='</div></div>';
-    h+='<div class="drow"><div class="dk">链路自己的代码</div>';
+    h+='<div class="drow"><div class="dk">'+esc(U.drawer.flowOwnCode)+'</div>';
     // An anchored flow MAY also compose, so anchors and steps are never
     // either/or — both render, and the empty case says which kind this is.
     h+=(f.anchors&&f.anchors.length)?f.anchors.map(fileRow).join("")
-      :'<div class="none">链路本身没有代码锚点'+((f.steps&&f.steps.length)?'——实现都在下面的步骤里。':'。')+'</div>';
+      :'<div class="none">'+esc((f.steps&&f.steps.length)?U.drawer.flowNoAnchorsSteps:U.drawer.flowNoAnchors)+'</div>';
     h+='</div>';
     if(f.steps&&f.steps.length)
-      h+='<div class="drow"><div class="dk">步骤 · 按执行先后</div><div class="dsteps">'+
+      h+='<div class="drow"><div class="dk">'+esc(U.drawer.steps)+'</div><div class="dsteps">'+
          f.steps.map(function(sid,i){
            return '<div class="dstep"><span class="stepn">'+(i+1)+'</span>'+chip(sid)+'</div>';}).join("")+'</div></div>';
     if(f.guards&&f.guards.length)
-      h+='<div class="drow"><div class="dk">看门狗 · 不在步骤里，但盯着这条链路</div><div class="dguards">'+
+      h+='<div class="drow"><div class="dk">'+esc(U.drawer.guards)+'</div><div class="dguards">'+
          f.guards.map(chip).join("")+'</div></div>';
-    h+=scenarioRows(f.scenarios,"链路本身还没有场景"+
-      ((f.steps&&f.steps.length)?"——每一步 loop 可能各自有，点进去看。":"。"));
-    h+=junctionRows(f.junctions,"穿过的交接点");
+    h+=scenarioRows(f.scenarios,(f.steps&&f.steps.length)?U.drawer.scnNoneFlowSteps:U.drawer.scnNoneFlow);
+    h+=junctionRows(f.junctions,U.drawer.junctionsCrossed);
     openDrawer(h,'[data-flow="'+id+'"]');
   }
   /** GWT scenario block — identical for loops and flows (F2b gives both). */
   function scenarioRows(list,emptyText){
-    var h='<div class="drow"><div class="dk">测试覆盖 · '+list.length+' 个场景</div>';
+    var h='<div class="drow"><div class="dk">'+esc(fmt(U.drawer.scnHead,list.length))+'</div>';
     if(!list.length) return h+'<div class="none">'+esc(emptyText)+'</div></div>';
     return h+list.map(function(sc){
-      if(sc.missing) return '<div class="scn"><div class="sid">'+esc(sc.id)+' · 未定义</div></div>';
-      var t='<div class="scn"><div class="sid"><span>'+esc(sc.id)+'</span><span>'+esc(sc.level)+'</span></div>';
-      t+='<p class="gwt"><span class="g">给定</span>'+esc(sc.given)+'</p>';
-      t+='<p class="gwt"><span class="g">当</span>'+esc(sc.when)+'</p>';
-      t+='<p class="gwt"><span class="g">则</span>'+esc(sc.then)+'</p>';
-      t+=(sc.tests&&sc.tests.length)?'<div style="margin-top:8px">'+sc.tests.map(fileRow).join("")+'</div>'
-         :'<div class="none" style="margin-top:8px">这个场景还没绑定测试。</div>';
-      return t+'</div>';
+      if(sc.missing) return '<div class="scn"><div class="sid">'+esc(fmt(U.drawer.scnUndefined,sc.id))+'</div></div>';
+      var x='<div class="scn"><div class="sid"><span>'+esc(sc.id)+'</span><span>'+esc(sc.level)+'</span></div>';
+      x+='<p class="gwt"><span class="g">'+esc(U.drawer.gwtGiven)+'</span>'+esc(sc.given)+'</p>';
+      x+='<p class="gwt"><span class="g">'+esc(U.drawer.gwtWhen)+'</span>'+esc(sc.when)+'</p>';
+      x+='<p class="gwt"><span class="g">'+esc(U.drawer.gwtThen)+'</span>'+esc(sc.then)+'</p>';
+      x+=(sc.tests&&sc.tests.length)?'<div style="margin-top:8px">'+sc.tests.map(fileRow).join("")+'</div>'
+         :'<div class="none" style="margin-top:8px">'+esc(U.drawer.scnNoTest)+'</div>';
+      return x+'</div>';
     }).join("")+'</div>';
   }
   /** Junction block — same jchip vocabulary the cards use. */
@@ -1735,28 +2290,41 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
     if(!list||!list.length) return '';
     return '<div class="drow"><div class="dk">'+esc(label)+'</div>'+list.map(function(j){
       return '<div class="dv soft" style="margin-bottom:5px"><span class="jchip '+(j.verdict||'')+'">'+esc(j.title)+
-      (j.verdict?' · '+VERDICT[j.verdict]:'')+'</span> '+esc(j.risk)+' · '+esc(j.between.join(" ↔ "))+'</div>';}).join("")+'</div>';
+      (j.verdict?' · '+esc(VERDICT[j.verdict]):'')+'</span> '+esc(riskText(j.risk))+' · '+esc(j.between.join(" ↔ "))+'</div>';}).join("")+'</div>';
   }
+  /** What the drawer is currently showing, so a language switch can re-open it. */
+  var cur=null;
+  /**
+   * True only while render() is re-opening what was already open. A redraw is
+   * not a selection: the two things openDrawer does to bring a NEW selection
+   * into view — scrolling the page to the drawer, and jumping the drawer's own
+   * body back to the top — would both be wrong here, where the reader pressed a
+   * language button and expects nothing to move but the words.
+   */
+  var restoring=false;
   /**
    * Swap the drawer body and move the selection highlight. Selection is cleared
    * across BOTH handle kinds: opening a loop after a flow used to leave the
    * flow's header lit, so the page claimed two things were open at once.
    */
   function openDrawer(html,selector){
+    var keep=restoring?body.scrollTop:0;
     hint.style.display="none"; body.style.display="block"; body.innerHTML=html;
-    drawer.classList.add("open"); body.scrollTop=0;
+    drawer.classList.add("open"); body.scrollTop=keep;
     var sel=document.querySelectorAll(".sel"); for(var i=0;i<sel.length;i++) sel[i].classList.remove("sel");
     var m=document.querySelectorAll(selector); for(var k=0;k<m.length;k++) m[k].classList.add("sel");
     // The panorama sits ABOVE the drawer's column, so a click up there would
     // otherwise fill a drawer nobody can see. Only scrolls when the drawer is
     // actually off-screen, and only on the wide layout (narrow puts the drawer
     // in a bottom sheet that is already in view).
-    if(window.innerWidth>980){
+    if(window.innerWidth>980&&!restoring){
       var r=drawer.getBoundingClientRect();
       if(r.top<0||r.top>window.innerHeight-160) drawer.scrollIntoView({behavior:"smooth",block:"start"});
     }
   }
-  window.__ovClose=function(){drawer.classList.remove("open");};
+  // Closing is a decision too: without clearing cur, a language switch would
+  // pop the bottom sheet back open on a phone.
+  window.__ovClose=function(){drawer.classList.remove("open");cur=null;};
   function openFrom(t){
     // loop first: a step chip lives INSIDE the flow drawer, and both handles
     // would otherwise match a nested lookup. The selector is deliberately NOT
@@ -1776,6 +2344,58 @@ export function renderOverviewHtml(model: OverviewModel, meta: OverviewMeta): st
     if(!e.target||!e.target.closest||!e.target.closest("svg.arch")) return;
     if(openFrom(e.target)) e.preventDefault();
   });
+  document.addEventListener("click",function(e){
+    var mb=e.target.closest?e.target.closest(".more"):null;
+    if(!mb) return;
+    var box=mb.parentNode.querySelector("span");
+    if(!box) return;
+    var open=box.classList.toggle("clamp");
+    mb.textContent=open?mb.getAttribute("data-open"):mb.getAttribute("data-shut");
+  });
+  // Hovering an entrance lights the loops it walks through — the one relation
+  // the static picture cannot draw without turning into spaghetti (a flow
+  // touches up to 3 loops and 19 flows would mean ~30 more lines). Bound to the
+  // container, which outlives every re-render, so switching language cannot
+  // stack a second copy of this handler.
+  var archWrap=document.getElementById("arch");
+  function archClear(){
+    var svgEl=archWrap.firstChild; if(!svgEl||!svgEl.classList) return;
+    svgEl.classList.remove("dim");
+    var hl=svgEl.querySelectorAll(".hl"); for(var i=0;i<hl.length;i++) hl[i].classList.remove("hl");
+  }
+  archWrap.addEventListener("mouseover",function(ev){
+    var svgEl=archWrap.firstChild; if(!svgEl||!svgEl.classList) return;
+    var t=ev.target.closest?ev.target.closest(".an[data-hl]"):null;
+    archClear();
+    if(!t) return;
+    // Attribute lookup by scan, not by selector string: a model id is free text
+    // and would break (or inject into) a querySelector.
+    var want=Object.create(null),ids=t.getAttribute("data-hl").split(" "),i;
+    for(i=0;i<ids.length;i++) want[ids[i]]=1;
+    var all=svgEl.querySelectorAll(".an");
+    for(i=0;i<all.length;i++){
+      var id=all[i].getAttribute("data-loop");
+      if(id&&want[id]) all[i].classList.add("hl");
+    }
+    t.classList.add("hl");
+    svgEl.classList.add("dim");
+  });
+  archWrap.addEventListener("mouseleave",archClear);
+  // Switching is an in-place re-render, never a reload: the scroll position and
+  // the open drawer both survive it (verified in a browser at 4000px down the pi
+  // page). The choice is remembered because a reader who picked a language once
+  // should not have to pick it again.
+  langBox.addEventListener("click",function(e){
+    var b=e.target.closest?e.target.closest("[data-lang]"):null;
+    if(!b) return;
+    var want=b.getAttribute("data-lang");
+    if(want===lang||!T[want]) return;
+    lang=want;
+    try{ localStorage.setItem(LANGKEY,lang); }catch(err){}
+    render();
+  });
+
+  render();
 })();
 </script>`;
 }
