@@ -273,6 +273,6 @@ anchors:
     const result = await runSearchCommand(targetDir, "xyznonexistent", graph);
 
     expect(result.summary).toContain("0 hits");
-    expect(result.summary).toContain("model_inspect");
+    expect(result.summary).toContain("inspect/overview");
   });
 });

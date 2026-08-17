@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import type { Readable } from "node:stream";
@@ -28,6 +28,7 @@ import { runHookPostEdit, runHookSessionStart } from "./commands/hook.js";
 import { INIT_NEXT_STEPS, runInit } from "./commands/init.js";
 import { runInspect } from "./commands/inspect.js";
 import { runOverview } from "./commands/overview.js";
+import { runSearchCli } from "./commands/search.js";
 import {
   type SnapshotDrift,
   diffSnapshots,
@@ -74,6 +75,7 @@ const USAGE =
   "       codeontic view <flow-id> [dir] [--validate]\n" +
   "       codeontic inspect <node-id> [dir] [--depth n]\n" +
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
+  '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
   "       codeontic coverage [dir]   # model-side coverage: how much of the model is anchored\n" +
@@ -557,6 +559,67 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         return 1;
       }
 
+      if (result.staleWarning) io.log(`⚠ ${result.staleWarning}`);
+      io.log(result.summary);
+      io.log(`wrote ${result.outputPath}`);
+      return 0;
+    }
+    case "search": {
+      // positionals[0] is the required query string, positionals[1] the target
+      // dir — same shape as inspect. A third positional almost always means an
+      // unquoted multi-word query, so name that mistake instead of a generic
+      // usage error (silently joining the words instead would make a query that
+      // happens to end in a directory name ambiguous).
+      const query = positionals[0];
+      if (!query) {
+        io.error(`missing <query> for \`search\`. ${USAGE}`);
+        return 1;
+      }
+      // `search <query> <dir>` and an unquoted two-word query are the SAME argv,
+      // so the trailing argument has to be classified. The only signal that
+      // actually distinguishes them is whether it carries a model: a directory
+      // holding `.codeontic/model` is what "target dir" MEANS, and nothing else
+      // can be searched. Bare existence is not enough — `search session docs`
+      // in a repo that has a model-less `docs/` would sail through and surface
+      // `model directory "docs/.codeontic/model" is not found — run "codeontic
+      // init"`, telling the user to initialize a directory they never meant to
+      // name. Where the signal is absent, say so and name BOTH readings instead
+      // of silently picking one.
+      const isSearchableDir = (p: string): boolean =>
+        existsSync(join(p, ".codeontic", "model")) &&
+        statSync(join(p, ".codeontic", "model")).isDirectory();
+      if (positionals.length > 2) {
+        // Same predicate as below, so the suggested command is copy-paste
+        // runnable: a trailing arg that isn't a searchable dir belongs inside
+        // the quoted query, not after it.
+        const last = positionals[positionals.length - 1] as string;
+        const lastIsDir = isSearchableDir(last);
+        const exampleQuery = (lastIsDir ? positionals.slice(0, -1) : positionals).join(" ");
+        io.error(
+          `search takes one query and an optional dir, got ${positionals.length} arguments — quote a multi-word query: codeontic search "${exampleQuery}"${lastIsDir ? ` ${last}` : " [dir]"}`,
+        );
+        return 1;
+      }
+      // Exactly two positionals — the most common unquoted form
+      // (`search session revive`) lands here, as does the documented
+      // `search auth ../other-repo`.
+      if (positionals[1] !== undefined && !isSearchableDir(positionals[1])) {
+        const reason = existsSync(positionals[1])
+          ? `"${positionals[1]}" has no .codeontic/model`
+          : `"${positionals[1]}" does not exist`;
+        io.error(
+          `${reason}, so it can't be the target dir — if it's part of the query, quote it: codeontic search "${query} ${positionals[1]}" [dir]; if you did mean that dir, run \`codeontic init\` there first`,
+        );
+        return 1;
+      }
+      const searchTargetDir = positionals[1] ?? process.cwd();
+      let result: Awaited<ReturnType<typeof runSearchCli>>;
+      try {
+        result = await runSearchCli(searchTargetDir, query);
+      } catch (err) {
+        io.error(err instanceof Error ? err.message : String(err));
+        return 1;
+      }
       if (result.staleWarning) io.log(`⚠ ${result.staleWarning}`);
       io.log(result.summary);
       io.log(`wrote ${result.outputPath}`);

@@ -412,8 +412,8 @@ description: >-
 ## 按意图路由
 
 ### 1. 改代码前先理解 → 查模型,别读全量 spec
-- MCP 工具:\`model_inspect\`(切片定位)、\`model_impact\`(改这个牵动谁)、\`model_plan\`(一条 flow 怎么跑)、\`model_scenario\`(GWT 细节 + 验证测试)、\`model_evidence\`(节点的锚点/证据)、\`model_matrix\`(flow 的 GWT↔test 覆盖)。
-- 或 CLI:\`codeontic impact <id> .\` / \`plan\` / \`scenario\` / \`evidence\` / \`matrix\`。
+- MCP 工具:\`model_search\`(自由文本找入口节点——不知道 id 时永远从这里开始)、\`model_inspect\`(切片定位)、\`model_impact\`(改这个牵动谁)、\`model_plan\`(一条 flow 怎么跑)、\`model_scenario\`(GWT 细节 + 验证测试)、\`model_evidence\`(节点的锚点/证据)、\`model_matrix\`(flow 的 GWT↔test 覆盖)。
+- 或 CLI:\`codeontic search "<关键词>" .\`(找入口,多词加引号) / \`impact <id> .\` / \`plan\` / \`scenario\` / \`evidence\` / \`matrix\`。
 - 铁律:动手前先 \`model_impact\` 看影响面。
 
 ### 2. 发现/建模新行为 → 四遍扫描
