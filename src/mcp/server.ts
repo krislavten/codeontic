@@ -101,7 +101,7 @@ export function buildMcpServer(targetDir: string): McpServer {
             `model has ${load.parseErrors.length} parse error(s) — run "codeontic check" first`,
           );
         }
-        const result = await runSearchCommand(targetDir, query, load.graph);
+        const result = await runSearchCommand(targetDir, query, load.graph, "mcp");
         return toolResult(
           `${result.staleWarning ? `⚠ ${result.staleWarning}\n\n` : ""}${result.summary}\n\nfull detail written to: ${result.outputPath}`,
         );

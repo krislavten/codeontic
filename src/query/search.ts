@@ -188,16 +188,47 @@ export function runSearch(graph: ModelGraph, query: string): { query: string; hi
   return { query, hits };
 }
 
-function renderSummary(query: string, hits: SearchHit[]): string {
+/**
+ * Which command vocabulary the guidance lines speak. renderSummary serves BOTH
+ * transports (the CLI `search` command and the `model_search` MCP tool return
+ * this same string), and the follow-up commands are named differently on each
+ * side (`inspect` vs `model_inspect`). Guidance that names the other side's
+ * commands sends the reader to a tool that does not exist in their context —
+ * exactly the bug this parameter removes; a single "neutral" wording cannot
+ * fix that, because any concrete command name is transport-specific.
+ */
+export type SearchNaming = "cli" | "mcp";
+
+/**
+ * Each side may name ONLY what exists on that side. The two are not a rename of
+ * one another: the CLI has an `overview` command, the MCP server registers no
+ * `model_overview` tool (mcp/server.ts: inspect/impact/plan/scenario/evidence/
+ * matrix/search), so the MCP guidance names `model_inspect` alone rather than a
+ * tool the caller cannot invoke. Whole clauses, not a tool-name pair, because
+ * that difference changes the sentence and not just a word in it.
+ */
+const NAMING_VOCAB: Record<SearchNaming, { browse: string; fewHits: string }> = {
+  cli: {
+    browse: "Try different terms, or browse with inspect/overview.",
+    fewHits: "use inspect <id> or overview instead of rephrasing",
+  },
+  mcp: {
+    browse: "Try different terms, or browse with model_inspect.",
+    fewHits: "use model_inspect <id> instead of rephrasing",
+  },
+};
+
+function renderSummary(query: string, hits: SearchHit[], naming: SearchNaming): string {
+  const vocab = NAMING_VOCAB[naming];
   const direct = hits.filter((h) => !h.related);
   const related = hits.filter((h) => h.related);
 
   if (direct.length === 0) {
-    return `model_search "${query}": 0 hits\nNo model nodes matched. Try different terms, or use model_inspect/model_overview to browse.`;
+    return `search "${query}": 0 hits\nNo model nodes matched. ${vocab.browse}`;
   }
 
   const lines: string[] = [
-    `model_search "${query}": ${direct.length} hit(s)${related.length > 0 ? ` + ${related.length} related` : ""}`,
+    `search "${query}": ${direct.length} hit(s)${related.length > 0 ? ` + ${related.length} related` : ""}`,
     "",
   ];
   for (const h of direct) {
@@ -211,10 +242,7 @@ function renderSummary(query: string, hits: SearchHit[]): string {
   }
 
   if (direct.length <= 3) {
-    lines.push(
-      "",
-      "Few hits — if this doesn't cover what you need, use model_inspect <id> or model_overview instead of rephrasing.",
-    );
+    lines.push("", `Few hits — if this doesn't cover what you need, ${vocab.fewHits}.`);
   }
 
   return lines.join("\n");
@@ -224,7 +252,7 @@ function renderBody(query: string, hits: SearchHit[], banner: string): string {
   const lines: string[] = [
     banner,
     "",
-    `# model_search: "${query}"`,
+    `# search: "${query}"`,
     "",
     `${hits.filter((h) => !h.related).length} direct hit(s), ${hits.filter((h) => h.related).length} related.`,
     "",
@@ -255,9 +283,10 @@ export async function runSearchCommand(
   targetDir: string,
   query: string,
   graph: ModelGraph,
+  naming: SearchNaming = "cli",
 ): Promise<SearchResult> {
   const { hits } = runSearch(graph, query);
-  const summary = renderSummary(query, hits);
+  const summary = renderSummary(query, hits, naming);
   // Keep CJK chars: a pure-CJK query must not wash out to an empty tag
   // (all such queries would collide on the same side-channel file).
   const hash = query
