@@ -7,7 +7,6 @@ import type { Adapter, ImplementationFact, SignalKind } from "../../adapters/typ
 import { loadComponents } from "../../config/components.js";
 import { runFacts } from "../../facts/runner.js";
 import { loadModel } from "../../loader/load-model.js";
-import type { ModelGraph } from "../../loader/model-graph.js";
 import { type CoverageRatioStats, computeCoverageRatio, pct } from "../../query/backtest.js";
 import { type Inv1CheckResult, runInv1Check } from "../../validate/inv1/check.js";
 import { loadInv1Config } from "../../validate/inv1/config.js";

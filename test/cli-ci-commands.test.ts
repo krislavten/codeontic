@@ -665,6 +665,51 @@ describe("gate vs check — no check may be lost in the move", () => {
     expect(text).not.toContain("按上面每条的 message 修模型");
   });
 
+  it("DELETING .codeontic/config.json fails the gate — turning a check off is a regression", async () => {
+    // The nastiest shape of "nothing was checked reads as clean": the trunk has
+    // INV-1 violations, the PR removes the config, HEAD reports zero findings,
+    // the base's violations look fixed, and INV-1 is off for every future PR.
+    await writeFile(
+      join(repo, ".codeontic", "config.json"),
+      JSON.stringify({
+        guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+      }),
+    );
+    await mkdir(join(repo, "packages", "rogue"), { recursive: true });
+    await writeFile(
+      join(repo, "packages", "rogue", "writer.ts"),
+      "import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n  await db.update(runs).set({ status: 'done' });\n}\n",
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "trunk: config present, one violation");
+    await git("tag", "basepoint");
+
+    await rm(join(repo, ".codeontic", "config.json"));
+    await git("add", "-A");
+    await git("commit", "-qm", "delete the config");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("INV-1 ran at the base ref but not here");
+    expect(text).not.toContain("gate: passed");
+  });
+
+  it("emptying the model directory fails the gate — vacuous checks are not passing checks", async () => {
+    await git("tag", "basepoint");
+    const modelDir = join(repo, ".codeontic", "model");
+    for (const sub of ["loops", "flows", "junctions", "scenarios", "features", "baseline"]) {
+      await rm(join(modelDir, sub), { recursive: true, force: true });
+    }
+    await mkdir(modelDir, { recursive: true });
+    await git("add", "-A");
+    await git("commit", "-qm", "empty the model, keep the directory");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    expect(code).toBe(1);
+    expect(out.join("\n")).toContain("has none here");
+  });
+
   it("an INV-1 write-site violation fails gate too, not only check", async () => {
     // 0.13.0 dropped INV-1 from the gate wholesale (the base side cannot score
     // an AST scan), so a repo moving its CI from `check` to `gate` lost the

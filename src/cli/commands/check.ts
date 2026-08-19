@@ -47,6 +47,27 @@ export interface CheckResult {
    * — otherwise it would have to re-load the model just to count debt.
    */
   debtIds: ReadonlySet<string>;
+  /**
+   * WHICH LAYERS ACTUALLY RAN, and how much they had to look at.
+   *
+   * Comparing findings across two trees answers "did this change break
+   * something". It cannot answer "did this change stop us from looking" — and
+   * those two produce the same empty result. Deleting `.codeontic/config.json`
+   * turns INV-1 off for every future PR; emptying the model directory (but
+   * leaving it in place, so the loader does not complain) makes every model
+   * check vacuous. Both yield zero findings, which reads as "clean".
+   *
+   * Reported here so the comparer can see the difference between "no findings"
+   * and "nothing was examined".
+   */
+  coverage: CheckCoverage;
+}
+
+export interface CheckCoverage {
+  /** True when the INV-1 layer produced a result — either violations or a loud failure. */
+  inv1Active: boolean;
+  /** How many nodes the model contributed. Zero means the model checks had nothing to check. */
+  nodeCount: number;
 }
 
 /**
@@ -107,8 +128,14 @@ export async function runCheck(
   }
 
   const debtIds = new Set(load.graph.byKind.debt.keys());
+  const nodeCount = Object.values(load.graph.byKind).reduce((n, m) => n + m.size, 0);
   if (!options.repoRoot) {
-    return { t0, debtIds, ...(baselineViolations ? { baselineViolations } : {}) };
+    return {
+      t0,
+      debtIds,
+      coverage: { inv1Active: false, nodeCount },
+      ...(baselineViolations ? { baselineViolations } : {}),
+    };
   }
 
   // --- diff resolution over the scanned repo (B2) ---
@@ -138,6 +165,7 @@ export async function runCheck(
     return {
       t0,
       debtIds,
+      coverage: { inv1Active: true, nodeCount },
       inv1ConfigError: configResult.error,
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
@@ -147,6 +175,7 @@ export async function runCheck(
     return {
       t0,
       debtIds,
+      coverage: { inv1Active: false, nodeCount },
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
     };
@@ -160,6 +189,7 @@ export async function runCheck(
   return {
     t0,
     debtIds,
+    coverage: { inv1Active: true, nodeCount },
     inv1,
     ...(diff ? { diff } : {}),
     ...(baselineViolations ? { baselineViolations } : {}),

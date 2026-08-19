@@ -1,14 +1,9 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { promisify } from "node:util";
 import type { Adapter } from "../../adapters/types.js";
 import { mergeBaseOf, withBaseWorktree } from "../../query/base-worktree.js";
 import { gitRootOf } from "../../query/diff.js";
 import { type Snapshot, type SnapshotDrift, diffSnapshots, runSnapshot } from "./snapshot.js";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * `codeontic drift-report` — "what service-to-service calls did this change

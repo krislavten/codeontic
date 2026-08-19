@@ -272,7 +272,11 @@ describe("clean-verdict caveats stack", () => {
   const bothCaveats = {
     verdict: "clean" as const,
     exitCode: 0 as const,
-    check: { t0: { ok: true, violations: [] }, debtIds: new Set<string>() },
+    check: {
+      t0: { ok: true, violations: [] },
+      debtIds: new Set<string>(),
+      coverage: { inv1Active: true, nodeCount: 1 },
+    },
     errors: [],
     newErrors: [],
     scope: "full" as const,

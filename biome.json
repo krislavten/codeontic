@@ -9,6 +9,10 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "error"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
       }
     }
   },
@@ -19,7 +23,11 @@
     "lineWidth": 100
   },
   "files": {
-    "ignore": ["node_modules", "dist", "coverage"]
+    "ignore": [
+      "node_modules",
+      "dist",
+      "coverage"
+    ]
   },
   "javascript": {
     "formatter": {
@@ -28,7 +36,9 @@
   },
   "overrides": [
     {
-      "include": ["tsconfig*.json"],
+      "include": [
+        "tsconfig*.json"
+      ],
       "json": {
         "parser": {
           "allowComments": true

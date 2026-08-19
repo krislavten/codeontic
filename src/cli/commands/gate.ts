@@ -4,7 +4,7 @@ import { gitRootOf } from "../../query/diff.js";
 import { checkBaselineOnlyDecreases } from "../../validate/baseline.js";
 import { inv1ViolationsFrom } from "../../validate/inv1/check.js";
 import type { Violation } from "../../validate/types.js";
-import { type CheckResult, runCheck } from "./check.js";
+import { type CheckCoverage, type CheckResult, runCheck } from "./check.js";
 
 /**
  * `codeontic gate` — the CI entry point: run the deterministic checks, decide
@@ -212,12 +212,54 @@ function scanSkippedViolation(reason: string | undefined): Violation {
   };
 }
 
-/** Everything the base side yields: the same errors, plus the debt ids to diff. */
+/** Everything the base side yields: the same errors, plus what the diff needs. */
 interface BaseScore {
   errors: Violation[];
   debtIds: ReadonlySet<string>;
+  /** What the base side was able to examine — see `regressionsInCoverage`. */
+  coverage: CheckCoverage;
   /** The base-side absolute paths, so the comparison can redact them out. */
   roots: string[];
+}
+
+/**
+ * Checks that STOPPED RUNNING between base and HEAD.
+ *
+ * A findings diff answers "did this change break something". It is blind to
+ * "did this change stop us from looking", because both produce an empty set —
+ * and the second one is worse, since it stays broken for every future PR too.
+ * Two concrete ways to do it by accident, both of which passed as `clean`:
+ * delete `.codeontic/config.json` (INV-1 goes quiet, and the violations it was
+ * reporting on the trunk read as fixed), or empty `.codeontic/model` while
+ * leaving the directory in place (the loader is content, every model check has
+ * nothing to check).
+ *
+ * The base side already knows what it was able to examine, so this is a
+ * comparison, not a heuristic: a layer that ran there and not here is a
+ * regression in this change, whatever the findings say.
+ */
+function regressionsInCoverage(base: CheckCoverage, head: CheckCoverage): Violation[] {
+  const out: Violation[] = [];
+  if (base.inv1Active && !head.inv1Active) {
+    out.push({
+      check: CONFIG_CHECK,
+      severity: "error",
+      message:
+        "INV-1 ran at the base ref but not here — `.codeontic/config.json` was removed, " +
+        "which switches the canonical-writer check off for this repo from now on. " +
+        "Restore it, or say in the PR why this repo no longer needs it.",
+      identity: "coverage|inv1",
+    });
+  }
+  if (base.nodeCount > 0 && head.nodeCount === 0) {
+    out.push({
+      check: "schema",
+      severity: "error",
+      message: `the model had ${base.nodeCount} node(s) at the base ref and has none here — every model check now passes because there is nothing left to check`,
+      identity: "coverage|model-empty",
+    });
+  }
+  return out;
 }
 
 /**
@@ -257,7 +299,12 @@ async function scoreBase(
         repoRoot: baseRepoRoot,
         strictAnchorExistence: strict,
       });
-      return { errors: errorsOf(check), debtIds: check.debtIds, roots: [baseTarget, baseRepoRoot] };
+      return {
+        errors: errorsOf(check),
+        debtIds: check.debtIds,
+        coverage: check.coverage,
+        roots: [baseTarget, baseRepoRoot],
+      };
     } catch (err) {
       return {
         reason: `scoring ${mergeBase.slice(0, 12)} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -375,6 +422,9 @@ export async function runGate(
   // once both debt id sets are in hand, so it is computed here and is new by
   // construction.
   newErrors.push(...checkBaselineOnlyDecreases(base.debtIds, check.debtIds));
+  // Same shape as debt growth: a property of the PAIR, so it is new by
+  // construction and cannot come from comparing findings.
+  newErrors.push(...regressionsInCoverage(base.coverage, check.coverage));
 
   const allErrors = [...errors, ...newErrors.filter((v) => !errors.includes(v))];
   if (newErrors.length > 0) {
