@@ -159,8 +159,23 @@ function readStringFlag(
 ): { value: string | undefined; error?: string } {
   const raw = flags[name];
   if (raw === undefined) return { value: undefined };
-  if (typeof raw === "string") return { value: raw };
-  return { value: undefined, error: `--${name} requires a value` };
+  if (typeof raw === "boolean") return { value: undefined, error: `--${name} requires a value` };
+  // An EMPTY value is a misconfigured caller, not a default. This matters most
+  // in CI, where flags are interpolated from variables: `--repo-root ""` used to
+  // reach `path.resolve("")`, which is the CURRENT WORKING DIRECTORY — so a
+  // pipeline with an unset variable scored a different tree than it named, and
+  // every "did the caller pass this?" guard downstream saw a value that was
+  // there. `--base ""` was worse: falsy, so the baseline comparison silently
+  // turned itself off and every pre-existing error read as newly introduced.
+  // Neither has a legitimate use; refusing here fixes both at the one place
+  // where the distinction between "absent" and "empty" still exists.
+  if (raw === "") {
+    return {
+      value: undefined,
+      error: `--${name} was given an empty value (an unset CI variable?) — pass a real value or drop the flag`,
+    };
+  }
+  return { value: raw };
 }
 
 /** Convention path a target repo's adapter module lives at, relative to targetDir. */

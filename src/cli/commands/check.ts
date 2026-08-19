@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { loadModel } from "../../loader/load-model.js";
 import {
@@ -62,9 +63,17 @@ export async function runCheck(
   if (options.diffBase) {
     const modelGitRoot = await gitRootOf(targetDir);
     if (modelGitRoot) {
+      // Both sides resolved before subtracting: git reports the REAL root while
+      // the caller's path may run through a symlink (on macOS every $TMPDIR
+      // does, and CI checkouts under /var hit the same thing). Subtracting the
+      // two spellings raw yields a `../../..`-shaped pathspec that matches
+      // nothing, `debtIdsAtRef` returns undefined, and the whole baseline check
+      // is skipped — silently, since "no prior baseline" is a legitimate state.
+      const gitRootReal = await realpath(modelGitRoot).catch(() => modelGitRoot);
+      const modelDirReal = await realpath(modelDir).catch(() => modelDir);
       const before = await debtIdsAtRef(
         modelGitRoot,
-        relative(modelGitRoot, modelDir),
+        relative(gitRootReal, modelDirReal),
         options.diffBase,
       );
       if (before) {

@@ -31,8 +31,6 @@ export interface DriftReportOptions {
   repoRoot: string;
   base: string;
   adapter?: Adapter | undefined;
-  /** Present in the summary as the PR's own framing; when false the wording stays neutral. */
-  attributable?: boolean | undefined;
 }
 
 export interface DriftReportResult {
@@ -143,15 +141,17 @@ export async function runDriftReport(
 
   const drift = diffSnapshots(snapshots.base, snapshots.head);
   // The reason lives on the DRIFT (diffSnapshots already reconciles which side
-  // was unavailable and why); the snapshots only carry the null itself.
+  // was unavailable and why); the snapshots only carry the null itself. The
+  // side is derived in the SAME order diffSnapshots uses (base first) — reading
+  // head first made "本次侧" collide with a reason reading "previous snapshot:"
+  // whenever both sides were null, i.e. the case most likely to be a real
+  // outage, and therefore the one worth being precise about.
+  const baseNull = snapshots.base.topologyEdges === null;
+  const headNull = snapshots.head.topologyEdges === null;
   const nullSide =
-    snapshots.head.topologyEdges === null
-      ? "本次"
-      : snapshots.base.topologyEdges === null
-        ? "基线"
-        : undefined;
+    baseNull && headNull ? "两侧" : baseNull ? "基线侧" : headNull ? "本次侧" : undefined;
   const unavailable = nullSide
-    ? `${nullSide}侧的边不可用：${drift.edgesSkippedReason ?? "引擎未给出原因"}`
+    ? `${nullSide}的边不可用：${drift.edgesSkippedReason ?? "引擎未给出原因"}`
     : undefined;
   return {
     ran: true,
@@ -167,9 +167,14 @@ function isEmptyTopology(snapshot: Snapshot): boolean {
   return snapshot.topologyEdges !== null && snapshot.topologyEdges.length === 0;
 }
 
-export function renderDriftMarkdown(result: DriftReportResult, attributable = true): string {
+export function renderDriftMarkdown(result: DriftReportResult): string {
+  // Whether the numbers may be called "this change's" is decided by the DATA
+  // (did both sides produce an edge set?), never by a caller-supplied flag: the
+  // previous shape took an `attributable` parameter that no call site passed,
+  // so asking for neutral wording silently produced the attributing wording.
+  const canAttribute = result.ran && !result.topologyEmpty && !result.edgesUnavailableReason;
   const out: string[] = [
-    attributable ? "## 本次改动新增的服务间调用边" : "## 服务间调用边 drift",
+    canAttribute ? "## 本次改动新增的服务间调用边" : "## 服务间调用边 drift",
     "",
   ];
   if (!result.ran || !result.drift) {
@@ -197,7 +202,6 @@ export function renderDriftMarkdown(result: DriftReportResult, attributable = tr
       "",
     );
   }
-  const canAttribute = attributable && !result.topologyEmpty && !result.edgesUnavailableReason;
 
   if (added.length === 0 && removed.length === 0) {
     out.push(

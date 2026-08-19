@@ -4,6 +4,7 @@ import { CODEONTIC_CONFIG_RELATIVE_PATH } from "../../config/config-file.js";
 import { loadModel } from "../../loader/load-model.js";
 import { materializeModelAtRef, mergeBaseOf, repoFilesAtRef } from "../../query/base-tree.js";
 import { gitRootOf } from "../../query/diff.js";
+import { inv1ViolationsFrom } from "../../validate/inv1/check.js";
 import { loadInv1Config } from "../../validate/inv1/config.js";
 import { runT0 } from "../../validate/t0.js";
 import type { Violation } from "../../validate/types.js";
@@ -81,26 +82,46 @@ function violationKey(v: Violation): string {
 }
 
 /**
- * What the gate is willing to judge.
+ * What the gate judges: everything `check` judges. A repo that moves its CI
+ * from `check` to `gate` must not quietly lose a check — that is a downgrade
+ * disguised as an upgrade, and nothing in the output would say so.
  *
- * T0 and the baseline check are MODEL facts: both sides can be scored from git
- * alone, so "did this change introduce it" is answerable. INV-1 is not — it is
- * an AST scan of the repo's source, and the base side here is never checked
- * out. Including its violations would compare a scored HEAD against an unscored
- * base, so every pre-existing write-site violation on the trunk would read as
- * "introduced by this change" and block unrelated work. Excluding them is the
- * honest half-answer: they still fail `check` and still appear in `report`,
- * they just are not attributed to a change by this command.
+ * The two error sources have different ATTRIBUTION mechanics, handled below by
+ * `DIFF_ATTRIBUTED` rather than by dropping anything here:
+ *  - T0 and the config parse are scored on both sides (base from git plumbing),
+ *    so "already broken at base" is answerable and pre-existing debt does not
+ *    block unrelated work;
+ *  - baseline-growth and INV-1 are computed against the base ref by `check`
+ *    itself, so they are about this change by construction.
  *
- * `inv1ConfigError` DOES count. A malformed `.codeontic/config.json` means the
- * INV-1 layer never ran; `check` treats that as a loud failure, and a gate that
- * scored it as "no errors" would go green precisely because a check was broken.
+ * `inv1ConfigError` counts as an error of its own. A malformed
+ * `.codeontic/config.json` means the INV-1 layer never ran, and a gate that
+ * scored that as "no errors" would go green precisely because a check broke.
  */
 function errorsOf(check: CheckResult): Violation[] {
-  const all: Violation[] = [...check.t0.violations, ...(check.baselineViolations ?? [])];
+  const all: Violation[] = [
+    ...check.t0.violations,
+    ...(check.baselineViolations ?? []),
+    ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : []),
+  ];
   if (check.inv1ConfigError) all.push(configViolation(check.inv1ConfigError));
   return all.filter((v) => v.severity === "error");
 }
+
+/**
+ * Findings that are ALREADY about this change, so comparing them against the
+ * base would be wrong twice over — the base cannot produce them, and they would
+ * therefore always read as new anyway.
+ *
+ * Both kinds here are computed relative to the base ref by `check` itself:
+ *  - `baseline-growth` IS the comparison ("the debt list shrank since base");
+ *  - `inv1-write-site`, once `diffBase` is set, scans ONLY the files this change
+ *    touched (`onlyFiles`), so a violation it reports is in a file this change
+ *    edited. This is what makes INV-1 gate-able without checking the base out —
+ *    the previous release excluded it wholesale, which meant a repo that moved
+ *    its CI from `check` to `gate` silently lost INV-1 enforcement.
+ */
+const DIFF_ATTRIBUTED = new Set<string>(["baseline-growth", "inv1-write-site"]);
 
 /**
  * A broken `.codeontic/config.json` as a comparable finding. Its own check name
@@ -193,6 +214,13 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
   const check = await runCheck(targetDir, {
     repoRoot: options.repoRoot,
     strictAnchorExistence: options.strictAnchorExistence,
+    // Passing the base through is what makes two whole checks work at all:
+    // `baseline-growth` is computed only when there is a base to grow from, and
+    // INV-1 narrows its AST scan to the touched files. Omitting it — the 0.13.0
+    // shape — left `baselineViolations` permanently undefined (so `gate --base`
+    // never ran a check that `check --diff` fails on) and made INV-1 scan the
+    // whole repo for a result the gate then threw away.
+    ...(options.base ? { diffBase: options.base } : {}),
   });
   const errors = errorsOf(check);
 
@@ -238,8 +266,14 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
     };
   }
 
+  // Split before comparing, rather than relying on the base side happening not
+  // to produce these keys: that would be an invisible coupling, and the day the
+  // base side learns to score one of them it would start cancelling findings
+  // that are by definition about this change.
   const baseKeys = new Set(base.errors.map(violationKey));
-  const newErrors = errors.filter((v) => !baseKeys.has(violationKey(v)));
+  const newErrors = errors.filter(
+    (v) => DIFF_ATTRIBUTED.has(v.check) || !baseKeys.has(violationKey(v)),
+  );
   return newErrors.length > 0
     ? { verdict: "new-errors", exitCode: 1, check, errors, newErrors }
     : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [] };

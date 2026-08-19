@@ -87,7 +87,19 @@ export async function runReport(
     }
     const lines: string[] = [];
     const io: CliIO = { log: (l) => lines.push(l), error: (l) => lines.push(l) };
-    const exitCode = await invoke(spec.args, io);
+    // Per-section, not around the loop: a throw in section 3 must not discard
+    // the readings sections 1 and 2 already produced. The outer catch in the
+    // dispatcher would turn the whole run into one error line — the exact
+    // "can't tell 'found nothing' from 'never ran'" failure this command exists
+    // to prevent, reproduced one level up.
+    let exitCode: number;
+    try {
+      exitCode = await invoke(spec.args, io);
+    } catch (err) {
+      exitCode = 1;
+      lines.push(`这一节抛错，未跑完：${err instanceof Error ? err.message : String(err)}`);
+      lines.push("空白/残缺不代表对账通过——它代表这次没查完。");
+    }
     if (
       exitCode !== 0 ||
       lines.some((l) => l.includes("skipped") || l.includes("failed to load"))
@@ -133,9 +145,14 @@ export function renderReportText(result: ReportResult): string {
   return out.join("\n");
 }
 
+/** See `writeGithubSummary` in gate-render.ts — same contract, never throws. */
 export async function appendGithubSummary(markdown: string): Promise<boolean> {
   const target = process.env.GITHUB_STEP_SUMMARY;
   if (!target) return false;
-  await appendFile(target, markdown, "utf8");
-  return true;
+  try {
+    await appendFile(target, markdown, "utf8");
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -127,13 +127,23 @@ export function renderGateMarkdown(result: GateResult): string {
 }
 
 /**
- * Writes the markdown to `$GITHUB_STEP_SUMMARY` when that is set, and always
- * returns it so a caller can print it too. Appending (not truncating) is what
- * the file is for — several steps write to the same summary.
+ * Writes the markdown to `$GITHUB_STEP_SUMMARY` when that is set. Appending
+ * (not truncating) is what the file is for — several steps write to the same
+ * summary.
+ *
+ * Never throws. A summary file that is unset, read-only, or on a full disk is a
+ * delivery problem for one rendering, and letting it reject would take down the
+ * command around it — including the two that promise never to fail. Callers get
+ * `false` and print the markdown to stdout instead, so the content survives
+ * either way.
  */
 export async function writeGithubSummary(markdown: string): Promise<boolean> {
   const target = process.env.GITHUB_STEP_SUMMARY;
   if (!target) return false;
-  await appendFile(target, markdown, "utf8");
-  return true;
+  try {
+    await appendFile(target, markdown, "utf8");
+    return true;
+  } catch {
+    return false;
+  }
 }
