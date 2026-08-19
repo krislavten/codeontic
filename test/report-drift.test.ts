@@ -143,6 +143,22 @@ describe("report and --strict-adapter", () => {
     expect(withFlag).toBe(withoutFlag);
   });
 
+  it("a failing adapter gate still prints all three sections — exit 1, not silence", async () => {
+    // Deciding the exit code early is fine; returning early is not. A banner
+    // with no readings under it is indistinguishable from "ran and found
+    // nothing", which is the confusion this whole command exists to prevent.
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(["report", workDir, "--repo-root", workDir, "--strict-adapter"], {
+      log: (l) => logs.push(l),
+      error: (l) => logs.push(l),
+    });
+    const text = logs.join("\n");
+    expect(code).toBe(1);
+    expect(text).toContain("模型侧覆盖");
+    expect(text).toContain("达标判定");
+  });
+
   it("--strict-adapter really fails — the same defect its sibling command just fixed", async () => {
     // drift-report was fixed one commit earlier; `report` had it too, and the
     // banner it prints ("pass --strict-adapter to fail CI on this") was equally

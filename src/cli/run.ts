@@ -86,7 +86,7 @@ const USAGE =
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
   "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; the reading never fails the build (only --strict-adapter or a broken --adapter-path can)\n" +
-  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; the readings never fail the build (only --strict-adapter can)\n" +
+  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; the readings never fail the build (only --strict-adapter or a broken --adapter-path can)\n" +
   "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base checks out the base ref in a temp worktree and runs the identical check there, so already-broken vs newly-broken is a set difference); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
@@ -710,11 +710,15 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         io,
         true,
       );
-      if ("halt" in reportAdapterStatus) {
-        if (reportAdapterStatus.cause === "broken" || flags["strict-adapter"] === true) {
-          return reportAdapterStatus.halt;
-        }
-      }
+      // Decided here, ACTED ON at the end. Returning straight away made the
+      // command produce a banner and nothing else — no sections, neither
+      // renderer — which is the exact confusion this command exists to prevent:
+      // a reader cannot tell "found nothing" from "never ran". The sections
+      // that need no adapter still have something to say, so they still say it,
+      // and the exit code carries the adapter's verdict afterwards.
+      const reportAdapterHalt =
+        "halt" in reportAdapterStatus &&
+        (reportAdapterStatus.cause === "broken" || flags["strict-adapter"] === true);
       let report: Awaited<ReturnType<typeof runReport>>;
       try {
         report = await runReport(
@@ -739,8 +743,9 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       }
       // Advisory by construction: the readings themselves never fail the
       // caller. The one way this command exits non-zero is the adapter gate
-      // above, which is either a real breakage or an explicit opt-in.
-      return 0;
+      // above, which is either a real breakage or an explicit opt-in — and by
+      // now everything it could report has already been printed.
+      return reportAdapterHalt ? 1 : 0;
     }
     case "gate": {
       // The CI entry point. Everything a workflow used to hand-roll around
