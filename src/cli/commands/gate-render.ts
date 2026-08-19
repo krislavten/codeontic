@@ -54,7 +54,12 @@ export function renderGateText(result: GateResult): string {
   const lines: string[] = [];
   switch (result.verdict) {
     case "clean":
-      lines.push("gate: passed — no model errors.");
+      lines.push(
+        result.scope === "model-only"
+          ? "gate: passed — no MODEL errors. (Model-only run: anchor existence and INV-1 did not run, " +
+              "so this is not a statement about the code.)"
+          : "gate: passed — no model errors.",
+      );
       break;
     case "preexisting":
       lines.push(
@@ -89,7 +94,12 @@ export function renderGateMarkdown(result: GateResult): string {
   const out: string[] = ["## codeontic gate", ""];
   switch (result.verdict) {
     case "clean":
-      out.push("✅ 模型与代码一致，没有 error。");
+      out.push(
+        result.scope === "model-only"
+          ? "✅ **模型自身**没有 error。⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，" +
+              "所以这条绿不构成「模型与代码一致」的判断。"
+          : "✅ 模型与代码一致，没有 error。",
+      );
       break;
     case "preexisting":
       out.push(

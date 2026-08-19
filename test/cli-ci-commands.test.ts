@@ -116,6 +116,28 @@ describe("gate — argv-level", () => {
     expect(text).not.toContain("introduced by this change");
   });
 
+  it("gate without --repo-root is refused — a half-run must not read as a pass", async () => {
+    // The model alone is clean here, so the partial run would have printed
+    // "gate: passed — no model errors" and exited 0 while anchor-existence and
+    // INV-1 never executed.
+    const code = await run(["gate", repo], io);
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("--repo-root");
+    expect(text).not.toContain("passed");
+  });
+
+  it("--model-only allows the partial run but says so in the verdict", async () => {
+    const code = await run(["gate", repo, "--model-only", "--format", "github"], io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("model-only");
+    // The summary must not make the full-run claim…
+    expect(text).not.toContain("✅ 模型与代码一致，没有 error。");
+    // …and must name what did not run.
+    expect(text).toContain("没跑");
+  });
+
   it("an error already on the trunk exits 0 through the real command line", async () => {
     await breakAnchor();
     await git("add", "-A");
@@ -178,6 +200,43 @@ describe("gate vs check — no check may be lost in the move", () => {
     // …and `gate` must reach the same verdict, for the same reason.
     expect(gateCode).toBe(1);
     expect(out.join("\n")).toContain("baseline");
+  });
+
+  it("a subdirectory --repo-root still scans INV-1 (paths speak the same base)", async () => {
+    // `git diff --name-only` returns GIT-TOP-LEVEL paths whichever directory it
+    // runs in, while INV-1's `git grep` candidates are repoRoot-relative. With a
+    // subdirectory repo root the intersection used to be empty, so INV-1 scanned
+    // zero files and the gate went green on a violation sitting right there.
+    const svc = join(repo, "services", "api");
+    await mkdir(join(svc, "packages", "rogue"), { recursive: true });
+    // The config is read from the TARGET dir (where the model lives), while the
+    // allowlist paths are relative to --repo-root.
+    await writeFile(
+      join(repo, ".codeontic", "config.json"),
+      JSON.stringify({
+        guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+      }),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "service scaffold");
+    await git("tag", "svcbase");
+
+    await writeFile(
+      join(svc, "packages", "rogue", "writer.ts"),
+      "import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n  await db.update(runs).set({ status: 'done' });\n}\n",
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "rogue write inside the service");
+
+    const checkOut: string[] = [];
+    await run(["check", repo, "--repo-root", svc, "--diff", "svcbase"], {
+      log: (l) => checkOut.push(l),
+      error: (l) => checkOut.push(l),
+    });
+    const text = checkOut.join("\n");
+    // The scan must have actually looked at the file (0 scanned = the old bug).
+    expect(text).toMatch(/INV-1 scan: [1-9]\d*\//);
+    expect(text).toContain("violation");
   });
 
   it("an INV-1 write-site violation fails gate too, not only check", async () => {

@@ -50,6 +50,23 @@ export interface CheckResult {
  * map changed files to affected model nodes, and enforce baseline-only-decreases
  * against the model at the base ref.
  */
+/**
+ * Re-expresses git's top-level-relative paths against `repoRoot`, dropping the
+ * ones that fall outside it (another service's files, in a monorepo where the
+ * scan is scoped to one package). Returns them unchanged when repoRoot IS the
+ * checkout root, which is the common case.
+ */
+async function toRepoRootRelative(paths: string[], repoRoot: string): Promise<string[]> {
+  const gitRoot = await gitRootOf(repoRoot);
+  if (!gitRoot) return paths;
+  const gitRootReal = await realpath(gitRoot).catch(() => gitRoot);
+  const repoRootReal = await realpath(repoRoot).catch(() => repoRoot);
+  const prefix = relative(gitRootReal, repoRootReal).split(/[/\\]/).join("/");
+  if (!prefix || prefix.startsWith("..")) return paths;
+  const head = `${prefix}/`;
+  return paths.filter((p) => p.startsWith(head)).map((p) => p.slice(head.length));
+}
+
 export async function runCheck(
   targetDir: string,
   options: CheckOptions = {},
@@ -89,7 +106,15 @@ export async function runCheck(
   let diff: DiffInfo | undefined;
   let onlyFiles: Set<string> | undefined;
   if (options.diffBase) {
-    const changed = await changedFiles(options.repoRoot, options.diffBase);
+    const raw = await changedFiles(options.repoRoot, options.diffBase);
+    // `git diff --name-only` speaks GIT-TOP-LEVEL paths no matter which
+    // directory it ran in, while everything downstream — INV-1's `git grep`
+    // candidates, and the model's anchors — speaks REPO-ROOT paths. When
+    // `--repo-root` is the checkout root the two coincide, which is why this
+    // went unnoticed; point it at a subdirectory and the intersection is empty:
+    // INV-1 scans zero files and reports a clean result, and `affected` maps no
+    // node to any changed file.
+    const changed = raw ? await toRepoRootRelative(raw, options.repoRoot) : undefined;
     onlyFiles = changed ? new Set(changed) : undefined;
     diff = {
       baseRef: options.diffBase,

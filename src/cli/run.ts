@@ -87,7 +87,7 @@ const USAGE =
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
   "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; never fails\n" +
   "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; never fails\n" +
-  "       codeontic gate [dir] [--repo-root path] [--base ref] [--strict-anchors] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base scores the base ref without checking it out); --format github appends to $GITHUB_STEP_SUMMARY\n" +
+  "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base scores the base ref without checking it out); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
   "       codeontic coverage [dir]   # model-side coverage: how much of the model is anchored\n" +
@@ -610,24 +610,35 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         io.error(`--format must be "github" (got "${driftFormat.value}"). ${USAGE}`);
         return 1;
       }
-      // `gateable: true` — a broken adapter halts here rather than silently
-      // producing an empty edge set, which would read as "no new edges".
+      // `gateable: true` so a BROKEN adapter is loud rather than silently
+      // producing an empty edge set (which would read as "no new edges"). Its
+      // halt is converted into a stated non-result instead of an exit code:
+      // this command is documented — in its usage line and its changeset — as
+      // never failing the caller, and a step that sometimes exits 1 anyway is
+      // worse than either contract, because the workflow around it is written
+      // for the promise, not the exception.
       const driftReportAdapter = await gateAdapter(flags, driftRepoRoot.value, io, true);
-      if ("halt" in driftReportAdapter) return driftReportAdapter.halt;
       // Same reasoning as `report` above: an advisory step that throws turns a
       // reading into a red build. A failure becomes a stated non-result.
       let driftResult: Awaited<ReturnType<typeof runDriftReport>>;
-      try {
-        driftResult = await runDriftReport(driftTargetDir, {
-          repoRoot: resolvePath(driftRepoRoot.value),
-          base: driftBase.value,
-          ...(driftReportAdapter.adapter ? { adapter: driftReportAdapter.adapter } : {}),
-        });
-      } catch (err) {
+      if ("halt" in driftReportAdapter) {
         driftResult = {
           ran: false,
-          reason: `drift-report 抛错：${err instanceof Error ? err.message : String(err)}`,
+          reason: "适配器没能加载（上面已打印原因）——没有事实提取器就没有边可比",
         };
+      } else {
+        try {
+          driftResult = await runDriftReport(driftTargetDir, {
+            repoRoot: resolvePath(driftRepoRoot.value),
+            base: driftBase.value,
+            ...(driftReportAdapter.adapter ? { adapter: driftReportAdapter.adapter } : {}),
+          });
+        } catch (err) {
+          driftResult = {
+            ran: false,
+            reason: `drift-report 抛错：${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
       }
       io.log(renderDriftText(driftResult));
       if (driftFormat.value === "github") {
@@ -702,6 +713,18 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       }
       if (gateFormat.value !== undefined && gateFormat.value !== "github") {
         io.error(`--format must be "github" (got "${gateFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      // `gate` is the CI entry point, so a partial run must not look like a
+      // pass. Without a repo root, anchor-existence and INV-1 do not run at all
+      // and the remaining model-only checks happily report "no model errors" —
+      // a green build that checked half of what its name implies. Requiring the
+      // flag makes the complete run the default; `--model-only` is the way to
+      // ask for the partial one, and it says so in the output.
+      if (gateRepoRoot.value === undefined && flags["model-only"] !== true) {
+        io.error(
+          `gate needs --repo-root <repo>: without it anchor-existence and INV-1 do not run, and the result would read as "clean" while half the gate never executed. Pass --model-only if a model-only check is what you want. ${USAGE}`,
+        );
         return 1;
       }
       let gate: Awaited<ReturnType<typeof runGate>>;

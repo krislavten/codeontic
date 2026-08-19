@@ -62,6 +62,13 @@ export interface GateResult {
   newErrors: Violation[];
   /** Why the base could not be scored, when verdict is "unverifiable-base". */
   baseUnavailableReason?: string;
+  /**
+   * `"model-only"` when no repoRoot was given: anchor existence and INV-1 did
+   * not run. Carried on the result so every renderer has to face it — a verdict
+   * that omits WHAT WAS CHECKED reads as a full pass in the one place people
+   * look, the summary.
+   */
+  scope: "full" | "model-only";
 }
 
 /**
@@ -223,6 +230,7 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
     ...(options.base ? { diffBase: options.base } : {}),
   });
   const errors = errorsOf(check);
+  const scope = options.repoRoot ? ("full" as const) : ("model-only" as const);
 
   // BEFORE the clean short-circuit, deliberately. `--base` without `--repo-root`
   // is a misconfigured pipeline, and the damage it does is not "one error gets
@@ -237,16 +245,17 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
       check,
       errors,
       newErrors: errors,
+      scope,
       baseUnavailableReason:
         "--base needs --repo-root: without it the anchor and INV-1 layers do not run at all, " +
         "so an empty result would mean 'not checked', not 'clean'",
     };
   }
   if (errors.length === 0) {
-    return { verdict: "clean", exitCode: 0, check, errors, newErrors: [] };
+    return { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope };
   }
   if (!options.base) {
-    return { verdict: "new-errors", exitCode: 1, check, errors, newErrors: errors };
+    return { verdict: "new-errors", exitCode: 1, check, errors, newErrors: errors, scope };
   }
 
   const base = await errorsAtBase(
@@ -262,6 +271,7 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
       check,
       errors,
       newErrors: errors,
+      scope,
       baseUnavailableReason: base.reason,
     };
   }
@@ -275,6 +285,6 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
     (v) => DIFF_ATTRIBUTED.has(v.check) || !baseKeys.has(violationKey(v)),
   );
   return newErrors.length > 0
-    ? { verdict: "new-errors", exitCode: 1, check, errors, newErrors }
-    : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [] };
+    ? { verdict: "new-errors", exitCode: 1, check, errors, newErrors, scope }
+    : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [], scope };
 }
