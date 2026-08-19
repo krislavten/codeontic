@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import type { Violation } from "../../validate/types.js";
-import { CONFIG_CHECK, COVERAGE_CHECK, DRIFT_CHECKS, type GateResult } from "./gate.js";
+import { CONFIG_CHECK, COVERAGE_CHECK, DRIFT_CHECKS, type GateResult, SCAN_CHECK } from "./gate.js";
 
 /**
  * Turning a gate verdict into words. This lives in the engine because the
@@ -18,6 +18,25 @@ function bullets(violations: Violation[]): string[] {
     return `- **${v.check}** ${where} — ${v.message}`;
   });
 }
+
+/**
+ * Checks that got a bucket of their own above — each names a different thing to
+ * fix, and none of them is "the model is malformed".
+ *
+ * Exported so a test can assert that EVERY check name is classified. Four of
+ * the last five review rounds found the same defect: a newly added violation
+ * borrowed an existing check name, and the guidance then sent the author to fix
+ * something that was not broken. Reusing a name is cheap to do and invisible
+ * until someone reads the output, so the classification is now enforced rather
+ * than remembered.
+ */
+export const OWN_BUCKET: ReadonlySet<string> = new Set([
+  CONFIG_CHECK,
+  COVERAGE_CHECK,
+  SCAN_CHECK,
+  "baseline-growth",
+  "inv1-write-site",
+]);
 
 function guidance(violations: Violation[]): string[] {
   const names = new Set(violations.map((v) => v.check));
@@ -57,6 +76,12 @@ function guidance(violations: Violation[]): string[] {
         "或在 `.codeontic/config.json` 的 allowlist 里说明它为什么也是规范的），不是模型。",
     );
   }
+  if (names.has(SCAN_CHECK)) {
+    lines.push(
+      "某一层检查**配置是对的，但根本没能启动**（INV-1 的预筛要 `git grep`，所以 `--repo-root` " +
+        "必须指向一个 git 检出）—— 要修的是运行环境，不是配置文件本身；具体原因见上面那条 message。",
+    );
+  }
   if (names.has(CONFIG_CHECK)) {
     // Its own bucket: the thing to fix is a JSON file, and the model is fine.
     // Folding it into "the model contradicts itself" sends the author reading
@@ -66,14 +91,6 @@ function guidance(violations: Violation[]): string[] {
         "修的是这个配置文件，不是模型。",
     );
   }
-  // Checks that already got a bucket of their own above — each names a
-  // different thing to fix, and none of them is "the model is malformed".
-  const OWN_BUCKET = new Set<string>([
-    CONFIG_CHECK,
-    COVERAGE_CHECK,
-    "baseline-growth",
-    "inv1-write-site",
-  ]);
   if ([...names].some((n) => !DRIFT_CHECKS.has(n) && !OWN_BUCKET.has(n))) {
     lines.push(
       "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +

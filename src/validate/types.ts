@@ -41,7 +41,15 @@ export type CheckName =
    * other name because the thing to fix is neither the model nor a finding:
    * it is that this change removed the ability to look.
    */
-  | "coverage-regression";
+  | "coverage-regression"
+  /**
+   * A layer that is configured correctly but could not START — INV-1 needs a
+   * git checkout for its `git grep` pre-filter, and a source tree copied
+   * somewhere without one has nothing wrong with its config. Separate from
+   * `codeontic-config` because the file the author must go look at is a
+   * different file (or no file at all).
+   */
+  | "scan-unavailable";
 
 export interface Violation {
   check: CheckName;

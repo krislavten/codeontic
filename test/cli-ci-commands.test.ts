@@ -602,6 +602,10 @@ describe("gate vs check — no check may be lost in the move", () => {
       expect(text).not.toContain("✅ 模型与代码一致，没有 error。");
       expect(code).toBe(1);
       expect(text).toContain("INV-1 did not run");
+      // The config here is perfectly valid — the guidance must not send the
+      // author to go fix its JSON syntax.
+      expect(text).not.toContain("JSON 语法");
+      expect(text).toContain("没能启动");
     } finally {
       await rm(copy, { recursive: true, force: true });
     }

@@ -218,6 +218,15 @@ export const CONFIG_CHECK = "codeontic-config";
  */
 export const COVERAGE_CHECK = "coverage-regression";
 
+/**
+ * A configured layer that could not start. Its own name for the same reason as
+ * every neighbour here: the guidance keys off the name, and pointing someone at
+ * `.codeontic/config.json` when that file is perfectly valid — the real cause
+ * being a repo-root that is not a git checkout — costs them the whole debugging
+ * session.
+ */
+export const SCAN_CHECK = "scan-unavailable";
+
 function configViolation(error: string): Violation {
   return {
     check: CONFIG_CHECK,
@@ -239,7 +248,7 @@ function configViolation(error: string): Violation {
  */
 function scanSkippedViolation(reason: string | undefined): Violation {
   return {
-    check: CONFIG_CHECK,
+    check: SCAN_CHECK,
     severity: "error",
     message: `INV-1 did not run: ${reason ?? "scan reported no reason"}`,
   };
