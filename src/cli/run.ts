@@ -599,11 +599,21 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // producing an empty edge set, which would read as "no new edges".
       const driftReportAdapter = await gateAdapter(flags, driftRepoRoot.value, io, true);
       if ("halt" in driftReportAdapter) return driftReportAdapter.halt;
-      const driftResult = await runDriftReport(driftTargetDir, {
-        repoRoot: resolvePath(driftRepoRoot.value),
-        base: driftBase.value,
-        ...(driftReportAdapter.adapter ? { adapter: driftReportAdapter.adapter } : {}),
-      });
+      // Same reasoning as `report` above: an advisory step that throws turns a
+      // reading into a red build. A failure becomes a stated non-result.
+      let driftResult: Awaited<ReturnType<typeof runDriftReport>>;
+      try {
+        driftResult = await runDriftReport(driftTargetDir, {
+          repoRoot: resolvePath(driftRepoRoot.value),
+          base: driftBase.value,
+          ...(driftReportAdapter.adapter ? { adapter: driftReportAdapter.adapter } : {}),
+        });
+      } catch (err) {
+        driftResult = {
+          ran: false,
+          reason: `drift-report 抛错：${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
       io.log(renderDriftText(driftResult));
       if (driftFormat.value === "github") {
         const markdown = renderDriftMarkdown(driftResult);
@@ -632,15 +642,27 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         io.error(`--format must be "github" (got "${reportFormat.value}"). ${USAGE}`);
         return 1;
       }
-      const report = await runReport(
-        reportTargetDir,
-        {
-          ...(reportRepoRoot.value === undefined ? {} : { repoRoot: reportRepoRoot.value }),
-          ...(reportAdapter.value === undefined ? {} : { adapterPath: reportAdapter.value }),
-          ...(flags["no-cache"] === true ? { noCache: true } : {}),
-        },
-        (args, captureIo) => run(args, captureIo),
-      );
+      // "never fails" has to survive an exception too, not just a non-zero
+      // exit: an unparseable model made `report` die with zero output, which is
+      // the one thing an advisory step must never do — the reader cannot tell
+      // "nothing to report" from "this never ran".
+      let report: Awaited<ReturnType<typeof runReport>>;
+      try {
+        report = await runReport(
+          reportTargetDir,
+          {
+            ...(reportRepoRoot.value === undefined ? {} : { repoRoot: reportRepoRoot.value }),
+            ...(reportAdapter.value === undefined ? {} : { adapterPath: reportAdapter.value }),
+            ...(flags["no-cache"] === true ? { noCache: true } : {}),
+          },
+          (args, captureIo) => run(args, captureIo),
+        );
+      } catch (err) {
+        io.error(
+          `⚠ report 未能产出：${err instanceof Error ? err.message : String(err)} —— 这是管线故障，不是「没查出问题」。`,
+        );
+        return 0;
+      }
       io.log(renderReportText(report));
       if (reportFormat.value === "github") {
         const markdown = renderReportMarkdown(report);

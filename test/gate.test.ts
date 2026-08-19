@@ -160,3 +160,52 @@ describe("renderGateMarkdown", () => {
     expect(md).toContain("已经存在");
   });
 });
+
+describe("runGate — regressions from the 0.13 review", () => {
+  it("a deleted DIRECTORY anchor is judged new, not 'already broken at base'", async () => {
+    // `git ls-tree -r` lists blobs only; the filesystem calls a directory
+    // existing. Without `-t` the base set lacks the directory, both sides emit
+    // the same "does not exist" text, and a real deletion is waved through.
+    await mkdir(join(repo, "src", "synth", "pkg"), { recursive: true });
+    await writeFile(join(repo, "src", "synth", "pkg", "x.ts"), "export const X = 1;\n");
+    const path = join(repo, ".codeontic", "model", "loops", "main.yaml");
+    const model = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      model.replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/synth/main.ts#SynthLoop", "src/synth/pkg#X"]',
+      ),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "anchor a directory");
+
+    await rm(join(repo, "src", "synth", "pkg"), { recursive: true, force: true });
+    const result = await runGate(repo, {
+      repoRoot: repo,
+      strictAnchorExistence: true,
+      base: "HEAD",
+    });
+    expect(result.verdict).toBe("new-errors");
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("a malformed INV-1 config fails the gate instead of reading as 'no errors'", async () => {
+    await writeFile(join(repo, ".codeontic", "config.json"), "{ not valid json");
+    const result = await runGate(repo, { repoRoot: repo, strictAnchorExistence: true });
+    expect(result.verdict).not.toBe("clean");
+    expect(result.exitCode).toBe(1);
+    expect(result.errors.some((e) => e.message.includes("INV-1"))).toBe(true);
+  });
+
+  it("--base without --repo-root is refused, not silently dropped", async () => {
+    // A model-only error: anchor checks need a repoRoot, and this case has none.
+    await writeFile(
+      join(repo, ".codeontic", "model", "loops", "dup.yaml"),
+      'id: L90\nkind: loop\ntitle: dup\nboundary: "x"\nowner: y\nanchors: []\n',
+    );
+    const result = await runGate(repo, { strictAnchorExistence: true, base: "HEAD" });
+    expect(result.verdict).toBe("unverifiable-base");
+    expect(result.baseUnavailableReason).toContain("--repo-root");
+  });
+});

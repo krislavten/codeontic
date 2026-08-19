@@ -33,8 +33,23 @@ export async function mergeBaseOf(gitRoot: string, ref: string): Promise<string 
 }
 
 /**
- * Every repo-relative path present at `ref`. Feeds anchor-existence on the base
- * side: an anchor "exists at base" iff its path is in this set.
+ * Every path present at `ref`, expressed relative to `relativeTo` (default: the
+ * git root). Feeds anchor-existence on the base side: an anchor "exists at
+ * base" iff its path is in this set.
+ *
+ * Three details, each of which was a silent wrong answer before:
+ *  - `-t` lists TREES as well as blobs. The filesystem side calls a directory
+ *    "existing" (stat succeeds, and a bare directory IS a documented anchor
+ *    shape), so a blob-only base set reports every directory anchor as missing
+ *    — and when the change deletes such a directory, both sides emit the same
+ *    "does not exist" text, the keys match, and a real regression is scored
+ *    "already broken at base".
+ *  - `-z` takes git's RAW path bytes. `--name-only` alone re-quotes anything
+ *    non-ASCII or space-bearing with C escapes, which no amount of stripping
+ *    surrounding quotes decodes; such a path would read as absent at base.
+ *  - `relativeTo` exists because anchors resolve against `--repo-root`, which
+ *    may be a subdirectory of the checkout. Comparing git-root-relative paths
+ *    against repo-root-relative anchors makes every anchor look absent.
  *
  * Returns undefined (not an empty set) when git fails — the caller must fail
  * closed rather than read "no files at base" as "every anchor was already
@@ -43,16 +58,26 @@ export async function mergeBaseOf(gitRoot: string, ref: string): Promise<string 
 export async function repoFilesAtRef(
   gitRoot: string,
   ref: string,
+  relativeTo?: string | undefined,
 ): Promise<Set<string> | undefined> {
   try {
-    const { stdout } = await execFileAsync("git", ["ls-tree", "-r", "--name-only", ref], {
-      cwd: gitRoot,
-      maxBuffer: 64 * 1024 * 1024,
-    });
+    const { stdout } = await execFileAsync(
+      "git",
+      ["ls-tree", "-r", "-t", "-z", "--name-only", ref],
+      {
+        cwd: gitRoot,
+        maxBuffer: 64 * 1024 * 1024,
+      },
+    );
+    const prefix = relativeTo ? `${relativeTo.replace(/\/+$/, "")}/` : "";
     const files = new Set<string>();
-    for (const line of stdout.split("\n")) {
-      const path = line.trim().replace(/^"(.*)"$/, "$1");
-      if (path) files.add(path);
+    for (const path of stdout.split("\0")) {
+      if (!path) continue;
+      if (!prefix) {
+        files.add(path);
+      } else if (path.startsWith(prefix)) {
+        files.add(path.slice(prefix.length));
+      }
     }
     return files;
   } catch {
@@ -61,8 +86,14 @@ export async function repoFilesAtRef(
 }
 
 export interface MaterializedModel {
-  /** Directory holding `.codeontic/model/…` as it was at the ref. */
-  dir: string;
+  /**
+   * The MODEL directory itself, ready to hand to the loader. Not the temp root:
+   * the tree is rebuilt at its repo-relative path, so a model that does not sit
+   * at the checkout root (`packages/app/.codeontic/model`) lands nested, and a
+   * caller that assumed `<tmp>/.codeontic/model` would get ENOENT — surfaced as
+   * a misleading "run codeontic init".
+   */
+  modelDir: string;
   cleanup: () => Promise<void>;
 }
 
@@ -113,5 +144,5 @@ export async function materializeModelAtRef(
     await cleanup();
     return undefined;
   }
-  return { dir, cleanup };
+  return { modelDir: join(dir, ...modelRelDir.split("/")), cleanup };
 }

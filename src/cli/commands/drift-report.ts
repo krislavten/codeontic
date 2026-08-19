@@ -42,6 +42,14 @@ export interface DriftReportResult {
   drift?: SnapshotDrift;
   /** True when either side produced zero topology edges — liveness cannot be asserted. */
   topologyEmpty?: boolean;
+  /**
+   * Set when a side reported edges as UNAVAILABLE (`topologyEdges: null`) with
+   * a cause. Folding that into `topologyEmpty` would throw the cause away and
+   * leave a vague "one side had no edges" — the snapshot artifact carries the
+   * reason precisely so the person reading tomorrow's report is not sent
+   * looking for an architecture change that never happened.
+   */
+  edgesUnavailableReason?: string;
 }
 
 async function withBaseWorktree<T>(
@@ -102,15 +110,29 @@ export async function runDriftReport(
   if (!snapshots) return { ran: false, reason: `could not check out ${sha.slice(0, 12)}` };
 
   const drift = diffSnapshots(snapshots.base, snapshots.head);
+  // The reason lives on the DRIFT (diffSnapshots already reconciles which side
+  // was unavailable and why); the snapshots only carry the null itself.
+  const nullSide =
+    snapshots.head.topologyEdges === null
+      ? "本次"
+      : snapshots.base.topologyEdges === null
+        ? "基线"
+        : undefined;
+  const unavailable = nullSide
+    ? `${nullSide}侧的边不可用：${drift.edgesSkippedReason ?? "引擎未给出原因"}`
+    : undefined;
   return {
     ran: true,
     drift,
+    // `null` is "could not compute, here is why"; `[]` is "computed, none
+    // found". Only the latter is emptiness.
     topologyEmpty: isEmptyTopology(snapshots.base) || isEmptyTopology(snapshots.head),
+    ...(unavailable ? { edgesUnavailableReason: unavailable } : {}),
   };
 }
 
 function isEmptyTopology(snapshot: Snapshot): boolean {
-  return (snapshot.topologyEdges?.length ?? 0) === 0;
+  return snapshot.topologyEdges !== null && snapshot.topologyEdges.length === 0;
 }
 
 export function renderDriftMarkdown(result: DriftReportResult, attributable = true): string {
@@ -130,14 +152,20 @@ export function renderDriftMarkdown(result: DriftReportResult, attributable = tr
   const added = result.drift.addedEdges ?? [];
   const removed = result.drift.removedEdges ?? [];
 
-  if (result.topologyEmpty) {
+  if (result.edgesUnavailableReason) {
     out.push(
-      "ℹ **有一侧的边集合是空的。** 这既可能是真的没有可识别的调用点了，也可能是事实扫描失败。",
+      `⚠ **边集合不可用** —— ${result.edgesUnavailableReason}`,
+      "先修这个成因，再看下面的读数；在那之前，下面的增减不能归因为架构变化。",
+      "",
+    );
+  } else if (result.topologyEmpty) {
+    out.push(
+      "ℹ **有一侧的边集合是空的（扫描跑了，只是一条都没找到）。**",
       "下面的结果照常呈现，但它的活性无法在这里断言。",
       "",
     );
   }
-  const canAttribute = attributable && !result.topologyEmpty;
+  const canAttribute = attributable && !result.topologyEmpty && !result.edgesUnavailableReason;
 
   if (added.length === 0 && removed.length === 0) {
     out.push(
@@ -186,6 +214,7 @@ export function renderDriftText(result: DriftReportResult): string {
   const lines = [`drift-report: +${added.length} / -${removed.length} topology edge(s)`];
   for (const e of added) lines.push(`  + ${e.from} → ${e.to}`);
   for (const e of removed) lines.push(`  - ${e.from} → ${e.to}`);
-  if (result.topologyEmpty) lines.push("  (one side had no edges — liveness not asserted)");
+  if (result.edgesUnavailableReason) lines.push(`  (${result.edgesUnavailableReason})`);
+  else if (result.topologyEmpty) lines.push("  (one side found no edges — liveness not asserted)");
   return lines.join("\n");
 }
