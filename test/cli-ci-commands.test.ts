@@ -582,6 +582,65 @@ describe("gate vs check — no check may be lost in the move", () => {
     }
   });
 
+  it("a SECOND identical INV-1 write site in one file is still judged new", async () => {
+    // The snippet is normalised source text, so two textually identical write
+    // statements collapse to one identity unless an ordinal distinguishes them
+    // — base has one, the PR adds another, both match, and a genuinely new
+    // violation is waved through as pre-existing.
+    await writeFile(
+      join(repo, ".codeontic", "config.json"),
+      JSON.stringify({
+        guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+      }),
+    );
+    await mkdir(join(repo, "packages", "rogue"), { recursive: true });
+    const writer = join(repo, "packages", "rogue", "writer.ts");
+    const stmt = "  await db.update(runs).set({ status: 'done' });\n";
+    await writeFile(
+      writer,
+      `import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n${stmt}}\n`,
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "one violation on the trunk");
+    await git("tag", "basepoint");
+
+    // Add a SECOND, textually identical write statement.
+    await writeFile(
+      writer,
+      `import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n${stmt}}\nexport async function g() {\n${stmt}}\n`,
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "add an identical second one");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    expect(code).toBe(1);
+    expect(out.join("\n")).toContain("introduced by this change");
+  });
+
+  it("a new debt node is told to pay the debt, not to fix a nonexistent schema error", async () => {
+    await writeFile(
+      join(repo, ".codeontic", "model", "baseline", "DEBT-SL-new.yaml"),
+      [
+        "id: DEBT-SL-new",
+        "kind: debt",
+        "category: dead_state_machine",
+        "subject: 新增债务",
+        'reality: "x"',
+        'owner: "packages/synth-owner"',
+        'removal_condition: "y"',
+        "",
+      ].join("\n"),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "register new debt");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "HEAD~1"], io);
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("新增了债务节点");
+    expect(text).not.toContain("按上面每条的 message 修模型");
+  });
+
   it("an INV-1 write-site violation fails gate too, not only check", async () => {
     // 0.13.0 dropped INV-1 from the gate wholesale (the base side cannot score
     // an AST scan), so a repo moving its CI from `check` to `gate` lost the

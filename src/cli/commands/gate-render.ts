@@ -28,6 +28,15 @@ function guidance(violations: Violation[]): string[] {
         "指向文件搬迁后的真实位置。",
     );
   }
+  if (names.has("baseline-growth")) {
+    // Its own bucket: nothing about the model is malformed, a debt node was
+    // ADDED. Falling through to the catch-all told the author to fix a schema
+    // error / id collision / cycle that does not exist.
+    lines.push(
+      "本次改动**新增了债务节点**（baseline 只允许减少，不允许增长）—— 要么把这笔债直接还掉，" +
+        "要么在 PR 里说明为什么它必须先被登记；不是模型写错了。",
+    );
+  }
   if (names.has(CONFIG_CHECK)) {
     // Its own bucket: the thing to fix is a JSON file, and the model is fine.
     // Folding it into "the model contradicts itself" sends the author reading
@@ -37,7 +46,9 @@ function guidance(violations: Violation[]): string[] {
         "修的是这个配置文件，不是模型。",
     );
   }
-  if ([...names].some((n) => !DRIFT_CHECKS.has(n) && n !== CONFIG_CHECK)) {
+  if (
+    [...names].some((n) => !DRIFT_CHECKS.has(n) && n !== CONFIG_CHECK && n !== "baseline-growth")
+  ) {
     lines.push(
       "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +
         " —— 按上面每条的 message 修模型。",
