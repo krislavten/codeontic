@@ -87,7 +87,7 @@ const USAGE =
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
   "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; never fails\n" +
   "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; never fails\n" +
-  "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base scores the base ref without checking it out); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
+  "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base checks out the base ref in a temp worktree and runs the identical check there, so already-broken vs newly-broken is a set difference); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
   "       codeontic coverage [dir]   # model-side coverage: how much of the model is anchored\n" +
@@ -701,7 +701,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // The CI entry point. Everything a workflow used to hand-roll around
       // `check` — base comparison, cause attribution, the step summary, the
       // exit code — is a return value here; see commands/gate.ts on why.
-      const gateTargetDir = positionals[0] ?? process.cwd();
+      const gateTargetDir = resolvePath(positionals[0] ?? process.cwd());
       const gateRepoRoot = readStringFlag(flags, "repo-root");
       const gateBase = readStringFlag(flags, "base");
       const gateFormat = readStringFlag(flags, "format");

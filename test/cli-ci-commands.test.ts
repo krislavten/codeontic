@@ -150,6 +150,52 @@ describe("gate — argv-level", () => {
     expect(out.join("\n")).toContain("already present at the base ref");
   });
 
+  it("a broken anchor without --strict-anchors passes, but the summary does not claim consistency", async () => {
+    // anchor-existence is advisory by default (an engine-level decision). The
+    // gate honouring that is fine; printing "模型与代码一致，没有 error" while
+    // the model points at a deleted file is not — it teaches people the gate is
+    // wrong, which costs more than the leniency.
+    await rm(join(repo, "src", "synth", "main.ts"));
+    const code = await run(["gate", repo, "--repo-root", repo, "--format", "github"], io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).not.toContain("✅ 模型与代码一致，没有 error。");
+    expect(text).toContain("advisory");
+    expect(text).toContain("--strict-anchors");
+  });
+
+  it("RELATIVE paths on the command line still compare correctly", async () => {
+    // `gate . --repo-root . --base main` is how a workflow actually writes it.
+    // The comparison redacts the roots out of messages; with "." treated as a
+    // root, every "." in every message was replaced on the HEAD side only —
+    // `src/main.ts#Loop` → `src/main<root>ts#Loop` — so no key ever matched and
+    // every error already on the trunk read as introduced by the PR.
+    await breakAnchor();
+    await git("add", "-A");
+    await git("commit", "-qm", "broken at base");
+    await git("tag", "basepoint");
+    // An unrelated commit on top: this PR introduces nothing.
+    await writeFile(join(repo, "unrelated.txt"), "hello\n");
+    await git("add", "-A");
+    await git("commit", "-qm", "unrelated change");
+
+    const cwd = process.cwd();
+    process.chdir(repo);
+    try {
+      const code = await run(
+        ["gate", ".", "--repo-root", ".", "--base", "basepoint", "--strict-anchors"],
+        io,
+      );
+      expect(code).toBe(0);
+      const text = out.join("\n");
+      expect(text).toContain("already present at the base ref");
+      // And the messages must not have been mangled by the redaction.
+      expect(text).not.toContain("<root>ts");
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   it("an error introduced by the change exits 1 through the real command line", async () => {
     await breakAnchor();
     const code = await run(

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderGateMarkdown } from "../src/cli/commands/gate-render.js";
-import { runGate } from "../src/cli/commands/gate.js";
+import { redactRoots, runGate } from "../src/cli/commands/gate.js";
 import { seedSyntheticModel } from "./support/seed-synthetic-model.js";
 
 const exec = promisify(execFile);
@@ -131,6 +131,28 @@ describe("runGate", () => {
     expect(result.newErrors[0]?.message).toContain("gone-b.ts");
   });
 
+  it("relative targetDir/repoRoot at the LIBRARY entry still compares correctly", async () => {
+    // Only the normalisation inside runGate protects this path — the CLI's own
+    // resolvePath does not run here.
+    await breakAnchor("loops/main.yaml", ".ts#", "-GONE.ts#");
+    await git("add", "-A");
+    await git("commit", "-qm", "broken at base");
+
+    const cwd = process.cwd();
+    process.chdir(repo);
+    try {
+      const result = await runGate(".", {
+        repoRoot: ".",
+        strictAnchorExistence: true,
+        base: "HEAD",
+      });
+      expect(result.verdict).toBe("preexisting");
+      expect(result.exitCode).toBe(0);
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   it("unusable base ref → fails closed with a reason, never silently passes", async () => {
     await breakAnchor("loops/main.yaml", ".ts#", "-GONE.ts#");
     const result = await runGate(repo, {
@@ -213,6 +235,25 @@ describe("runGate", () => {
     expect(md).toContain("config.json");
     // and NOT the wrong instruction to go fix the model
     expect(md).not.toContain("按上面每条的 message 修模型");
+  });
+});
+
+describe("redactRoots", () => {
+  it("ignores relative roots — replacing '.' would rewrite every path in the message", () => {
+    const msg = 'anchor "src/synth/main.ts#SynthLoop" does not exist under .';
+    expect(redactRoots(msg, [".", "."])).toBe(msg);
+  });
+
+  it("replaces absolute roots, longest first so a nested root wins", () => {
+    const msg = "missing under /tmp/repo/services/api (root /tmp/repo)";
+    expect(redactRoots(msg, ["/tmp/repo", "/tmp/repo/services/api"])).toBe(
+      "missing under <root> (root <root>)",
+    );
+  });
+
+  it("ignores the filesystem root, which would match everywhere", () => {
+    const msg = "a/b under /x";
+    expect(redactRoots(msg, ["/"])).toBe(msg);
   });
 });
 

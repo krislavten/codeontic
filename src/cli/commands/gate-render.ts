@@ -65,8 +65,16 @@ export function renderGateText(result: GateResult): string {
         result.scope === "model-only"
           ? "gate: passed — no MODEL errors. (Model-only run: anchor existence and INV-1 did not run, " +
               "so this is not a statement about the code.)"
-          : "gate: passed — no model errors.",
+          : result.advisoryCount > 0
+            ? `gate: passed — no blocking errors, but ${result.advisoryCount} advisory finding(s) ran and were not counted.`
+            : "gate: passed — no model errors.",
       );
+      if (result.scope !== "model-only" && result.advisoryCount > 0) {
+        lines.push(
+          "锚点存在性等检查默认是 advisory —— 它们发现了问题但不影响判定。要它们参与判红，加 --strict-anchors；" +
+            "完整清单跑 `codeontic check`。",
+        );
+      }
       break;
     case "preexisting":
       lines.push(
@@ -112,7 +120,9 @@ export function renderGateMarkdown(result: GateResult): string {
         result.scope === "model-only"
           ? "✅ **模型自身**没有 error。⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，" +
               "所以这条绿不构成「模型与代码一致」的判断。"
-          : "✅ 模型与代码一致，没有 error。",
+          : result.advisoryCount > 0
+            ? `✅ 没有阻断级 error，放行。⚠ 但有 **${result.advisoryCount} 条 advisory 级发现**没参与判定（锚点存在性默认就是 advisory）——**这条绿不等于「模型与代码一致」**。要它们参与判红，加 \`--strict-anchors\`；完整清单跑 \`codeontic check\`。`
+            : "✅ 模型与代码一致，没有 error。",
       );
       break;
     case "preexisting":

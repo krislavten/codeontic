@@ -1,3 +1,4 @@
+import { isAbsolute, resolve, sep } from "node:path";
 import { mergeBaseOf, pathInBaseWorktree, withBaseWorktree } from "../../query/base-worktree.js";
 import { gitRootOf } from "../../query/diff.js";
 import { checkBaselineOnlyDecreases } from "../../validate/baseline.js";
@@ -64,6 +65,17 @@ export interface GateResult {
    * look, the summary.
    */
   scope: "full" | "model-only";
+  /**
+   * Findings that RAN and had something to say, but at warning severity, so
+   * they could not affect the exit code.
+   *
+   * Reported because the alternative is a lie: `anchor-existence` is advisory
+   * unless `--strict-anchors`, so a change that deletes an anchored source file
+   * produces a clean verdict — and a summary reading "模型与代码一致，没有
+   * error" while the model points at a file that is gone teaches people the
+   * gate is wrong, which is worse than the gate being lenient.
+   */
+  advisoryCount: number;
 }
 
 /**
@@ -96,9 +108,18 @@ function violationKey(v: Violation, roots: readonly string[] = []): string {
  * gate blocks every PR in the repo. Longest-first so a nested root (repoRoot
  * inside the worktree) is replaced before its parent.
  */
-function redactRoots(message: string, roots: readonly string[]): string {
+export function redactRoots(message: string, roots: readonly string[]): string {
   let out = message;
-  for (const root of [...roots].filter(Boolean).sort((a, b) => b.length - a.length)) {
+  // ABSOLUTE paths only. A relative root is a substring that means nothing on
+  // its own, and the common one is catastrophic: `gate . --repo-root .` would
+  // replace every "." in every message — `src/main.ts#Loop` becomes
+  // `src/main<root>ts#Loop` on the HEAD side while the base side (an absolute
+  // temp path) is untouched, so no two keys ever match and every pre-existing
+  // error reads as newly introduced. That blocks every PR in the repo.
+  const usable = [...roots]
+    .filter((r) => r && isAbsolute(r) && r !== sep)
+    .sort((a, b) => b.length - a.length);
+  for (const root of usable) {
     out = out.split(root).join("<root>");
   }
   return out;
@@ -120,6 +141,13 @@ function redactRoots(message: string, roots: readonly string[]): string {
  * `.codeontic/config.json` means the INV-1 layer never ran, and a gate that
  * scored that as "no errors" would go green precisely because a check broke.
  */
+/** Findings that ran but cannot block — see `GateResult.advisoryCount`. */
+function advisoriesOf(check: CheckResult): Violation[] {
+  return [...check.t0.violations, ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : [])].filter(
+    (v) => v.severity === "warning",
+  );
+}
+
 function errorsOf(check: CheckResult): Violation[] {
   const all: Violation[] = [
     ...check.t0.violations,
@@ -201,18 +229,28 @@ async function scoreBase(
   return scored;
 }
 
-export async function runGate(targetDir: string, options: GateOptions = {}): Promise<GateResult> {
+export async function runGate(
+  targetDirInput: string,
+  options: GateOptions = {},
+): Promise<GateResult> {
+  // Absolute from here down. Messages quote the roots they were scored against,
+  // and the comparison redacts those roots out — which only works if what lands
+  // in a message is the same string the comparison knows about. Normalising at
+  // the entry point (rather than at each use) is what keeps those two in sync.
+  const targetDir = resolve(targetDirInput);
+  const repoRoot = options.repoRoot === undefined ? undefined : resolve(options.repoRoot);
   // No `diffBase`: the base side runs the identical call over a checkout, so
   // both sides must see the SAME scope. Handing HEAD a diff base would narrow
   // INV-1 to the touched files on one side and scan everything on the other,
   // and the set difference would then report every untouched pre-existing
   // violation as removed and every touched one as new.
   const check = await runCheck(targetDir, {
-    repoRoot: options.repoRoot,
+    repoRoot,
     strictAnchorExistence: options.strictAnchorExistence,
   });
   const errors = errorsOf(check);
-  const scope = options.repoRoot ? ("full" as const) : ("model-only" as const);
+  const advisoryCount = advisoriesOf(check).length;
+  const scope = repoRoot ? ("full" as const) : ("model-only" as const);
 
   // BEFORE the clean short-circuit, deliberately. `--base` without `--repo-root`
   // is a misconfigured pipeline, and the damage it does is not "one error gets
@@ -220,7 +258,7 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
   // run at all, so the usual outcome is an EMPTY error set. Judged after the
   // short-circuit, that reads as `clean` / exit 0: a green gate produced by a
   // gate that did not run. Fail here and the pipeline gets fixed.
-  if (options.base && !options.repoRoot) {
+  if (options.base && !repoRoot) {
     return {
       verdict: "unverifiable-base",
       exitCode: 1,
@@ -228,6 +266,7 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
       errors,
       newErrors: errors,
       scope,
+      advisoryCount,
       baseUnavailableReason:
         "--base needs --repo-root: without it the anchor and INV-1 layers do not run at all, " +
         "so an empty result would mean 'not checked', not 'clean'",
@@ -235,8 +274,16 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
   }
   if (!options.base) {
     return errors.length === 0
-      ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope }
-      : { verdict: "new-errors", exitCode: 1, check, errors, newErrors: errors, scope };
+      ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope, advisoryCount }
+      : {
+          verdict: "new-errors",
+          exitCode: 1,
+          check,
+          errors,
+          newErrors: errors,
+          scope,
+          advisoryCount,
+        };
   }
 
   // The base side runs even when HEAD is clean, because one finding is not
@@ -245,7 +292,7 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
   // debt node has an empty HEAD error set.
   const base = await scoreBase(
     targetDir,
-    options.repoRoot as string,
+    repoRoot as string,
     options.base,
     options.strictAnchorExistence,
   );
@@ -262,6 +309,7 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
         errors,
         newErrors: [],
         scope,
+        advisoryCount,
         baseUnavailableReason: base.reason,
       };
     }
@@ -272,13 +320,16 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
       errors,
       newErrors: errors,
       scope,
+      advisoryCount,
       baseUnavailableReason: base.reason,
     };
   }
 
   // Each side's own roots are redacted from its own messages, so the two keys
   // meet on the same text.
-  const headRoots = [targetDir, options.repoRoot as string];
+  // Resolved here as well as at the CLI: `runGate` is a library entry point,
+  // and a relative path reaching redactRoots is the failure above.
+  const headRoots = [targetDir, repoRoot as string];
   const baseKeys = new Set(base.errors.map((v) => violationKey(v, base.roots)));
   const newErrors = errors.filter((v) => !baseKeys.has(violationKey(v, headRoots)));
   // Debt growth is a property of the PAIR, not of either side — it exists only
@@ -288,9 +339,17 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
 
   const allErrors = [...errors, ...newErrors.filter((v) => !errors.includes(v))];
   if (newErrors.length > 0) {
-    return { verdict: "new-errors", exitCode: 1, check, errors: allErrors, newErrors, scope };
+    return {
+      verdict: "new-errors",
+      exitCode: 1,
+      check,
+      errors: allErrors,
+      newErrors,
+      scope,
+      advisoryCount,
+    };
   }
   return errors.length === 0
-    ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope }
-    : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [], scope };
+    ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope, advisoryCount }
+    : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [], scope, advisoryCount };
 }
