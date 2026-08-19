@@ -311,17 +311,31 @@ function failedBanner(reason: string): string {
  * absence. A *broken* adapter (`failed`) halts everywhere regardless: that was
  * already true on all six and is not a policy this flag gets to relax.
  */
+/**
+ * Why an adapter resolution stopped the command.
+ *
+ * `broken` means something is WRONG — a path that does not load, a malformed
+ * flag. Advisory commands must still fail on it: an adapter path with a typo in
+ * it would otherwise run green forever, and the run reports nothing while
+ * looking like it reported nothing to report.
+ *
+ * `absent-strict` means nothing is wrong; the caller asked for a hard failure
+ * when no adapter exists. Advisory commands honour it because it is an explicit
+ * opt-in, but it is the caller's choice, not a defect.
+ */
+type AdapterHaltCause = "broken" | "absent-strict";
+
 async function gateAdapter(
   flags: Record<string, string | boolean>,
   targetDir: string,
   io: CliIO,
   gateable: boolean,
-): Promise<{ adapter?: Adapter } | { halt: number }> {
+): Promise<{ adapter?: Adapter } | { halt: number; cause: AdapterHaltCause }> {
   const f = readStringFlag(flags, "adapter-path");
   if (f.error) {
     // CLI misuse (e.g. `--adapter-path` as the last token) — keep the usage hint.
     io.error(`${f.error}. ${USAGE}`);
-    return { halt: 1 };
+    return { halt: 1, cause: "broken" };
   }
 
   const status = await resolveAdapter(f.value, targetDir);
@@ -331,12 +345,12 @@ async function gateAdapter(
       return { adapter: status.adapter };
     case "failed":
       io.error(failedBanner(status.reason));
-      return { halt: 1 };
+      return { halt: 1, cause: "broken" };
     default: {
       // absent
       if (gateable && flags["strict-adapter"] === true) {
         io.error(ABSENT_STRICT_BANNER);
-        return { halt: 1 };
+        return { halt: 1, cause: "absent-strict" };
       }
       io.log(absentBanner(gateable));
       return {};
@@ -626,7 +640,13 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // reading into a red build. A failure becomes a stated non-result.
       let driftResult: Awaited<ReturnType<typeof runDriftReport>>;
       if ("halt" in driftReportAdapter) {
-        if (strictAdapter) return driftReportAdapter.halt;
+        // A BROKEN adapter fails regardless of the advisory contract: the
+        // contract exists so a missing capability does not redden a build, not
+        // so a typo in `--adapter-path` can hide. `absent-strict` fails too,
+        // because that one is the caller asking for it.
+        if (driftReportAdapter.cause === "broken" || strictAdapter) {
+          return driftReportAdapter.halt;
+        }
         driftResult = {
           ran: false,
           reason: "适配器不可用（缺失或加载失败，原因见上）——没有事实提取器就没有边可比",
@@ -685,6 +705,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
             ...(reportRepoRoot.value === undefined ? {} : { repoRoot: reportRepoRoot.value }),
             ...(reportAdapter.value === undefined ? {} : { adapterPath: reportAdapter.value }),
             ...(flags["no-cache"] === true ? { noCache: true } : {}),
+            ...(flags["strict-adapter"] === true ? { strictAdapter: true } : {}),
           },
           (args, captureIo) => run(args, captureIo),
         );
@@ -699,8 +720,11 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         const markdown = renderReportMarkdown(report);
         if (!(await appendGithubSummary(markdown))) io.log(markdown);
       }
-      // Advisory by construction: a reading never fails the caller.
-      return 0;
+      // Advisory by construction: a reading never fails the caller — unless the
+      // caller said otherwise. `--strict-adapter` is exactly that, and honouring
+      // it here is what makes the banner's own advice ("pass --strict-adapter to
+      // fail CI on this") true on this command too.
+      return report.strictHalt ? 1 : 0;
     }
     case "gate": {
       // The CI entry point. Everything a workflow used to hand-roll around

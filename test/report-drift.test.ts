@@ -98,6 +98,31 @@ describe("runReport", () => {
   });
 });
 
+describe("report and --strict-adapter", () => {
+  it("defaults to advisory: no adapter, exit 0", async () => {
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(["report", workDir, "--repo-root", workDir], {
+      log: (l) => logs.push(l),
+      error: (l) => logs.push(l),
+    });
+    expect(code).toBe(0);
+  });
+
+  it("--strict-adapter really fails — the same defect its sibling command just fixed", async () => {
+    // drift-report was fixed one commit earlier; `report` had it too, and the
+    // banner it prints ("pass --strict-adapter to fail CI on this") was equally
+    // untrue here.
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(["report", workDir, "--repo-root", workDir, "--strict-adapter"], {
+      log: (l) => logs.push(l),
+      error: (l) => logs.push(l),
+    });
+    expect(code).toBe(1);
+  });
+});
+
 describe("drift-report and --strict-adapter", () => {
   it("defaults to advisory: a missing adapter is stated, exit stays 0", async () => {
     await seedSyntheticModel(workDir);
@@ -107,6 +132,29 @@ describe("drift-report and --strict-adapter", () => {
       error: (l) => logs.push(l),
     });
     expect(code).toBe(0);
+  });
+
+  it("a broken --adapter-path fails even WITHOUT --strict-adapter", async () => {
+    // The advisory contract exists so a missing capability does not redden a
+    // build. A typo in the adapter path is not a missing capability, and
+    // swallowing it means the run reports nothing while looking like it found
+    // nothing to report.
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(
+      [
+        "drift-report",
+        workDir,
+        "--repo-root",
+        workDir,
+        "--base",
+        "HEAD",
+        "--adapter-path",
+        join(workDir, "does-not-exist.js"),
+      ],
+      { log: (l) => logs.push(l), error: (l) => logs.push(l) },
+    );
+    expect(code).toBe(1);
   });
 
   it("--strict-adapter really fails — it used to print 'hard failure' and exit 0", async () => {

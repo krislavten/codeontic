@@ -30,12 +30,21 @@ export interface ReportOptions {
   repoRoot?: string | undefined;
   adapterPath?: string | undefined;
   noCache?: boolean | undefined;
+  /**
+   * Forwarded to the sections that need an adapter. Without it, a repo with no
+   * adapter got the banner's advice — "pass --strict-adapter to fail CI on
+   * this" — and then exit 0 when it did, which makes the advice a lie and the
+   * flag decorative.
+   */
+  strictAdapter?: boolean | undefined;
 }
 
 export interface ReportResult {
   sections: ReportSection[];
   /** True when a section's command reported it could not run (adapter missing, etc.). */
   degraded: boolean;
+  /** True when `--strict-adapter` was given AND a section stopped because of it. */
+  strictHalt: boolean;
 }
 
 export async function runReport(
@@ -52,6 +61,7 @@ export async function runReport(
   // stayed false, so nothing said the two halves disagreed about which tree
   // they were describing.
   if (options.noCache) common.push("--no-cache");
+  if (options.strictAdapter) common.push("--strict-adapter");
 
   const specs: { title: string; note?: string; args: string[]; requiresRepoRoot?: boolean }[] = [
     {
@@ -77,6 +87,7 @@ export async function runReport(
 
   const sections: ReportSection[] = [];
   let degraded = false;
+  let strictHalt = false;
   for (const spec of specs) {
     if (spec.requiresRepoRoot && !options.repoRoot) {
       degraded = true;
@@ -112,6 +123,9 @@ export async function runReport(
     ) {
       degraded = true;
     }
+    // `--strict-adapter` is the caller overriding "advisory": if a section
+    // stopped because of it, the command must stop too.
+    if (options.strictAdapter && exitCode !== 0) strictHalt = true;
     sections.push({
       title: spec.title,
       ...(spec.note ? { note: spec.note } : {}),
@@ -119,7 +133,7 @@ export async function runReport(
       exitCode,
     });
   }
-  return { sections, degraded };
+  return { sections, degraded, strictHalt };
 }
 
 export function renderReportMarkdown(result: ReportResult): string {
