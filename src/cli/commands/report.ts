@@ -138,7 +138,8 @@ export function renderReportMarkdown(result: ReportResult): string {
   }
   out.push(
     "> 以上仅供数据采集与人工复核：这些读数本身不参与合并判定，阻塞判定在 `codeontic gate`，是另一条通道。",
-    "> （唯一例外：`--strict-adapter` 是调用方明说「没有适配器就算失败」，那种情况下这一步会退出 1。）",
+    "> （两个例外会让这一步退出 1：`--adapter-path` 指向的适配器加载不了，" +
+      "或调用方用 `--strict-adapter` 明说「没有适配器就算失败」。）",
   );
   return `${out.join("\n")}\n`;
 }

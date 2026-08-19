@@ -47,7 +47,10 @@ describe("runReport", () => {
     // The readings do not gate merges; the wording no longer says a flat
     // "不影响合并", because --strict-adapter can make this step exit 1.
     expect(md).toContain("不参与合并判定");
+    // BOTH ways this step can exit 1 — naming only one sent adopters chasing
+    // a red required check with no explanation for it.
     expect(md).toContain("--strict-adapter");
+    expect(md).toContain("--adapter-path");
   });
 
   it("a skipped section marks the report degraded — blank is not 'passed'", async () => {
@@ -205,6 +208,23 @@ describe("drift-report and --strict-adapter", () => {
       { log: (l) => logs.push(l), error: (l) => logs.push(l) },
     );
     expect(code).toBe(1);
+  });
+
+  it("a failing adapter gate still renders the drift section — exit 1, not silence", async () => {
+    // The same shape `report` was fixed for one commit earlier: returning on the
+    // adapter halt skipped both renderers, so `--format github` wrote no
+    // "这次没能比较 / 这不等于没有新增边" section into the step summary at all.
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(
+      ["drift-report", workDir, "--repo-root", workDir, "--base", "HEAD", "--strict-adapter"],
+      { log: (l) => logs.push(l), error: (l) => logs.push(l) },
+    );
+    expect(code).toBe(1);
+    const text = logs.join("\n");
+    // The text renderer's wording; the markdown one says 这次没能比较.
+    expect(text).toContain("not compared");
+    expect(text).toContain("NOT");
   });
 
   it("--strict-adapter really fails — it used to print 'hard failure' and exit 0", async () => {

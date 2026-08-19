@@ -325,6 +325,37 @@ function failedBanner(reason: string): string {
  */
 type AdapterHaltCause = "broken" | "absent-strict";
 
+/**
+ * The adapter step for the two ADVISORY commands (`report`, `drift-report`).
+ *
+ * One function because the two of them kept drifting apart: each time one was
+ * fixed, the other kept the defect — `--strict-adapter` honoured in one and
+ * decorative in the other; the exit decision made early in one and returned
+ * early in the other, which printed a banner and no readings. Three review
+ * rounds in a row found the same shape in whichever command had not been
+ * touched.
+ *
+ * The contract it encodes: resolve the adapter, DECIDE whether this run should
+ * fail, and hand that decision back — never return early. The caller runs and
+ * renders everything it can either way, and applies the decision as its exit
+ * code at the end. "Failed" means the adapter is broken (a typo in
+ * `--adapter-path` must not hide) or the caller asked for it via
+ * `--strict-adapter`.
+ */
+async function advisoryAdapterGate(
+  flags: Record<string, string | boolean>,
+  targetDir: string,
+  io: CliIO,
+): Promise<{ adapter?: Adapter; failRun: boolean }> {
+  const status = await gateAdapter(flags, targetDir, io, true);
+  if (!("halt" in status)) {
+    return { failRun: false, ...(status.adapter ? { adapter: status.adapter } : {}) };
+  }
+  return {
+    failRun: status.cause === "broken" || flags["strict-adapter"] === true,
+  };
+}
+
 async function gateAdapter(
   flags: Record<string, string | boolean>,
   targetDir: string,
@@ -634,19 +665,11 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // "this is a hard failure because --strict-adapter is set" and then
       // exited 0, and the banner's advice to "pass --strict-adapter to fail CI
       // on this" was, on this command, never true.
-      const strictAdapter = flags["strict-adapter"] === true;
-      const driftReportAdapter = await gateAdapter(flags, driftRepoRoot.value, io, true);
+      const driftReportAdapter = await advisoryAdapterGate(flags, driftRepoRoot.value, io);
       // Same reasoning as `report` above: an advisory step that throws turns a
       // reading into a red build. A failure becomes a stated non-result.
       let driftResult: Awaited<ReturnType<typeof runDriftReport>>;
-      if ("halt" in driftReportAdapter) {
-        // A BROKEN adapter fails regardless of the advisory contract: the
-        // contract exists so a missing capability does not redden a build, not
-        // so a typo in `--adapter-path` can hide. `absent-strict` fails too,
-        // because that one is the caller asking for it.
-        if (driftReportAdapter.cause === "broken" || strictAdapter) {
-          return driftReportAdapter.halt;
-        }
+      if (!driftReportAdapter.adapter) {
         driftResult = {
           ran: false,
           reason: "适配器不可用（缺失或加载失败，原因见上）——没有事实提取器就没有边可比",
@@ -656,7 +679,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
           driftResult = await runDriftReport(driftTargetDir, {
             repoRoot: resolvePath(driftRepoRoot.value),
             base: driftBase.value,
-            ...(driftReportAdapter.adapter ? { adapter: driftReportAdapter.adapter } : {}),
+            adapter: driftReportAdapter.adapter,
           });
         } catch (err) {
           driftResult = {
@@ -674,7 +697,11 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // the one exception, and it is either a breakage or an opt-in). When the
       // comparison could not run, the summary says so in words — that state is
       // reported, not swallowed, and not turned into a red build either.
-      return 0;
+      //
+      // Applied HERE, after both renderers have run: an early return would make
+      // a failing adapter produce a banner and no summary section at all, which
+      // is exactly what `report` was fixed for one commit ago.
+      return driftReportAdapter.failRun ? 1 : 0;
     }
     case "report": {
       // Composition, not reimplementation: each section runs the very command
@@ -704,11 +731,10 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // first attempt) counted any failure — a malformed model YAML making
       // conformance throw — as an adapter problem, so `--strict-adapter`
       // changed the exit code of runs that had no adapter issue at all.
-      const reportAdapterStatus = await gateAdapter(
+      const reportAdapterStatus = await advisoryAdapterGate(
         flags,
         reportRepoRoot.value ?? reportTargetDir,
         io,
-        true,
       );
       // Decided here, ACTED ON at the end. Returning straight away made the
       // command produce a banner and nothing else — no sections, neither
@@ -716,9 +742,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // a reader cannot tell "found nothing" from "never ran". The sections
       // that need no adapter still have something to say, so they still say it,
       // and the exit code carries the adapter's verdict afterwards.
-      const reportAdapterHalt =
-        "halt" in reportAdapterStatus &&
-        (reportAdapterStatus.cause === "broken" || flags["strict-adapter"] === true);
+      const reportAdapterHalt = reportAdapterStatus.failRun;
       let report: Awaited<ReturnType<typeof runReport>>;
       try {
         report = await runReport(
