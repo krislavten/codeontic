@@ -25,7 +25,16 @@ export type CheckName =
   | "flow-shape"
   // Cross-node consistency (Proposal 016 T3, src/validate/consistency.ts).
   | "anchor-duplicate"
-  | "freetext-id-ref";
+  | "freetext-id-ref"
+  /**
+   * Not a check over the model — the finding that `.codeontic/config.json`
+   * itself is unreadable, so the layer it configures never ran. It gets its own
+   * name because "INV-1 found a bad write site" and "INV-1 could not start" call
+   * for opposite actions, and because the gate compares findings by name: with
+   * this one distinct, a config already broken on the trunk compares equal
+   * across the two sides instead of being blamed on the next PR.
+   */
+  | "codeontic-config";
 
 export interface Violation {
   check: CheckName;

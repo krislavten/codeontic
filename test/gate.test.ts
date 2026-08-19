@@ -90,23 +90,35 @@ describe("runGate", () => {
     // Regression guard for the hand-written version's bug: keying on
     // `check + nodeId` alone collapsed both anchors of one node into a single
     // entry, so the new breakage hid behind the old one.
+    //
+    // The anchors are REWRITTEN outright rather than pattern-matched out of the
+    // fixture: the previous version of this test looked for a block-sequence
+    // anchor line, the fixture writes them inline (`anchors: [...]`), and the
+    // no-match branch quietly degraded into asserting the file was non-empty —
+    // it stayed green with the key reverted to `check + nodeId`.
     const path = join(repo, ".codeontic", "model", "loops", "main.yaml");
     const original = await readFile(path, "utf8");
-    const anchorLine = original.match(/^\s+- ["']?[\w/.-]+\.ts#\w+["']?$/m);
-    if (!anchorLine) {
-      // Fixture has no two-anchor node — assert the key shape directly instead.
-      expect(original.length).toBeGreaterThan(0);
-      return;
-    }
-    await breakAnchor("loops/main.yaml", ".ts#", "-GONE.ts#");
+    expect(original).toContain('anchors: ["src/synth/main.ts#SynthLoop"]');
+
+    // Base: L90 has ONE broken anchor.
+    await writeFile(
+      path,
+      original.replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/synth/gone-a.ts#SynthLoop"]',
+      ),
+    );
     await git("add", "-A");
     await git("commit", "-qm", "one broken anchor at base");
-    // Add a SECOND broken anchor to the same node.
-    const withSecond = (await readFile(path, "utf8")).replace(
-      anchorLine[0],
-      `${anchorLine[0]}\n${anchorLine[0].replace(".ts#", "-ALSO-GONE.ts#")}`,
+
+    // HEAD: the same broken anchor PLUS a second one on the same node.
+    await writeFile(
+      path,
+      original.replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/synth/gone-a.ts#SynthLoop", "src/synth/gone-b.ts#SynthLoop"]',
+      ),
     );
-    await writeFile(path, withSecond);
     const result = await runGate(repo, {
       repoRoot: repo,
       strictAnchorExistence: true,
@@ -114,6 +126,9 @@ describe("runGate", () => {
     });
     expect(result.verdict).toBe("new-errors");
     expect(result.exitCode).toBe(1);
+    // Precisely one is new; the base one must NOT be re-blamed on this change.
+    expect(result.newErrors).toHaveLength(1);
+    expect(result.newErrors[0]?.message).toContain("gone-b.ts");
   });
 
   it("unusable base ref → fails closed with a reason, never silently passes", async () => {
@@ -133,6 +148,71 @@ describe("runGate", () => {
     const result = await runGate(repo, { repoRoot: repo, strictAnchorExistence: true });
     expect(result.verdict).toBe("new-errors");
     expect(result.exitCode).toBe(1);
+  });
+
+  it("--base without --repo-root fails even on a CLEAN model — empty means 'not checked'", async () => {
+    // The dangerous shape: a workflow whose repo-root variable is empty. The
+    // anchor and INV-1 layers never run, the error set is therefore empty, and
+    // a clean-first short-circuit would call that a pass.
+    const result = await runGate(repo, { strictAnchorExistence: true, base: "HEAD" });
+    expect(result.verdict).toBe("unverifiable-base");
+    expect(result.exitCode).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(renderGateMarkdown(result)).toContain("没查");
+  });
+
+  it("a model file with a CJK name is still scorable at base", async () => {
+    // `git ls-tree --name-only` without `-z` C-escapes and re-quotes such a
+    // path; `git show <ref>:<escaped>` then exits 128 and the whole base side
+    // reads as "no model at base" — a permanent red for every PR in the repo.
+    const dir = join(repo, ".codeontic", "model", "loops");
+    await writeFile(
+      join(dir, "主循环.yaml"),
+      '- id: L91\n  kind: loop\n  title: CJK 文件名\n  boundary: "a → b"\n  owner: null\n  dormant: true\n',
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "cjk-named model file");
+    await breakAnchor("loops/main.yaml", ".ts#", "-GONE.ts#");
+
+    const result = await runGate(repo, {
+      repoRoot: repo,
+      strictAnchorExistence: true,
+      base: "HEAD",
+    });
+    expect(result.verdict).toBe("new-errors");
+    expect(result.baseUnavailableReason).toBeUndefined();
+  });
+
+  it("a config.json broken on the trunk is preexisting, not blamed on this change", async () => {
+    // Before: the HEAD side scored `inv1ConfigError` and the base side could
+    // not, so one bad commit on main turned every unrelated PR red.
+    await writeFile(join(repo, ".codeontic", "config.json"), "{ this is not json");
+    await git("add", "-A");
+    await git("commit", "-qm", "broken config on the trunk");
+
+    const result = await runGate(repo, {
+      repoRoot: repo,
+      strictAnchorExistence: true,
+      base: "HEAD",
+    });
+    expect(result.errors.some((v) => v.check === "codeontic-config")).toBe(true);
+    expect(result.verdict).toBe("preexisting");
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("a config.json broken BY this change is new-errors and points at the config", async () => {
+    await writeFile(join(repo, ".codeontic", "config.json"), "{ this is not json");
+    const result = await runGate(repo, {
+      repoRoot: repo,
+      strictAnchorExistence: true,
+      base: "HEAD",
+    });
+    expect(result.verdict).toBe("new-errors");
+    expect(result.exitCode).toBe(1);
+    const md = renderGateMarkdown(result);
+    expect(md).toContain("config.json");
+    // and NOT the wrong instruction to go fix the model
+    expect(md).not.toContain("按上面每条的 message 修模型");
   });
 });
 

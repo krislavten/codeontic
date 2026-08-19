@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import type { Violation } from "../../validate/types.js";
-import type { GateResult } from "./gate.js";
+import { CONFIG_CHECK, type GateResult } from "./gate.js";
 
 /**
  * Turning a gate verdict into words. This lives in the engine because the
@@ -31,7 +31,16 @@ function guidance(violations: Violation[]): string[] {
         "指向文件搬迁后的真实位置。",
     );
   }
-  if ([...names].some((n) => !DRIFT_CHECKS.has(n))) {
+  if (names.has(CONFIG_CHECK)) {
+    // Its own bucket: the thing to fix is a JSON file, and the model is fine.
+    // Folding it into "the model contradicts itself" sends the author reading
+    // YAML that has nothing wrong with it.
+    lines.push(
+      "`.codeontic/config.json` 本身坏了（JSON 语法或 schema 不合法），INV-1 整层因此没跑 —— " +
+        "修的是这个配置文件，不是模型。",
+    );
+  }
+  if ([...names].some((n) => !DRIFT_CHECKS.has(n) && n !== CONFIG_CHECK)) {
     lines.push(
       "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +
         " —— 按上面每条的 message 修模型。",
@@ -56,8 +65,10 @@ export function renderGateText(result: GateResult): string {
       break;
     case "unverifiable-base":
       lines.push(
-        `gate: FAILED — ${result.errors.length} error(s), and the base could not be scored ` +
-          `(${result.baseUnavailableReason}).`,
+        result.errors.length === 0
+          ? `gate: FAILED — the gate could not run as configured (${result.baseUnavailableReason}). An empty result here means NOT CHECKED, not clean.`
+          : `gate: FAILED — ${result.errors.length} error(s), and the base could not be scored ` +
+              `(${result.baseUnavailableReason}).`,
         "拿不到基线就无法判断是否本次引入 —— 按判红处理，宁可多挡一次。",
         ...bullets(result.errors),
       );
@@ -90,7 +101,9 @@ export function renderGateMarkdown(result: GateResult): string {
       break;
     case "unverifiable-base":
       out.push(
-        `❌ **判红**：${result.errors.length} 条 error，且**无法给基线打分**（${result.baseUnavailableReason}）。`,
+        result.errors.length === 0
+          ? `❌ **判红**：门禁没能按配置跑起来（${result.baseUnavailableReason}）。**这里的「零条 error」是「没查」，不是「没问题」** —— 先修管线配置。`
+          : `❌ **判红**：${result.errors.length} 条 error，且**无法给基线打分**（${result.baseUnavailableReason}）。`,
         "拿不到基线就无法判断是否本次引入 —— 宁可多挡一次，也不因为读不到 base 就静默放行。",
         "",
         ...bullets(result.errors),

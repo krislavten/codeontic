@@ -1,11 +1,13 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DriftReportResult,
+  baseRepoRootIn,
   renderDriftMarkdown,
   renderDriftText,
+  scanPrefixOf,
 } from "../src/cli/commands/drift-report.js";
 import { renderReportMarkdown, runReport } from "../src/cli/commands/report.js";
 import type { SnapshotDrift } from "../src/cli/commands/snapshot.js";
@@ -57,6 +59,20 @@ describe("runReport", () => {
     }
   });
 
+  it("without --repo-root the code-scanning section says so — it does not paste the CLI usage", async () => {
+    // `reconcile` without --repo-root prints the whole USAGE block to stderr and
+    // exits 1; collected as section output that is ~40 lines of help text sitting
+    // in a code block, indistinguishable from a reading.
+    await seedSyntheticModel(workDir);
+    const result = await runReport(workDir, {}, (args, io) => run(args, io));
+    const first = result.sections[0]?.lines.join("\n") ?? "";
+
+    expect(first).not.toContain("codeontic reconcile");
+    expect(first).toContain("--repo-root");
+    expect(first).toContain("这次没查");
+    expect(result.degraded).toBe(true);
+  });
+
   it("report never fails the caller (advisory by construction)", async () => {
     await seedSyntheticModel(workDir);
     const logs: string[] = [];
@@ -65,6 +81,38 @@ describe("runReport", () => {
       error: (l) => logs.push(l),
     });
     expect(code).toBe(0);
+  });
+});
+
+describe("base-side scan scope", () => {
+  it("a subdirectory --repo-root scans the SAME subdirectory in the base worktree", async () => {
+    // Before this, the base side scanned the whole worktree while HEAD scanned
+    // one service — so every other service's edges were reported as "removed by
+    // this change" on a PR that touched no edge at all.
+    const sub = join(workDir, "services", "api");
+    await mkdir(sub, { recursive: true });
+    const prefix = await scanPrefixOf(workDir, sub);
+    expect(prefix).toBe(join("services", "api"));
+    expect(baseRepoRootIn("/tmp/base", prefix)).toBe(join("/tmp/base", "services", "api"));
+  });
+
+  it("repoRoot === gitRoot scans the worktree root (no spurious nesting)", async () => {
+    const prefix = await scanPrefixOf(workDir, workDir);
+    expect(prefix).toBe("");
+    expect(baseRepoRootIn("/tmp/base", prefix)).toBe("/tmp/base");
+  });
+
+  it("a repoRoot outside the checkout falls back to the root, never to ../ escapes", async () => {
+    // realpath differences (macOS /var → /private/var) used to produce a
+    // `../../..`-shaped prefix that pointed outside the worktree entirely.
+    const outside = await mkdtemp(join(tmpdir(), "codeontic-outside-"));
+    try {
+      const prefix = await scanPrefixOf(workDir, outside);
+      expect(prefix).toBe("");
+      expect(baseRepoRootIn("/tmp/base", prefix)).toBe("/tmp/base");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

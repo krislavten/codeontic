@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Adapter } from "../../adapters/types.js";
 import { mergeBaseOf } from "../../query/base-tree.js";
@@ -78,6 +78,36 @@ async function withBaseWorktree<T>(
   }
 }
 
+/**
+ * How much of the checkout the scan covers, as a path relative to the git root
+ * (`""` when it covers the whole thing).
+ *
+ * The base side is a WHOLE worktree while `--repo-root` may point INTO the repo
+ * (`/repo/services/api`). Scanning the worktree root against a subdirectory HEAD
+ * compares two different scopes: every edge belonging to the other services
+ * reads as "removed by this change" — false, and exactly the kind of alarm that
+ * teaches people to ignore the report.
+ *
+ * Both sides are realpath'd first: git reports the resolved root while the
+ * caller's path may run through a symlink (on macOS every $TMPDIR does), and
+ * comparing the two spellings raw yields a `../..`-shaped prefix that escapes
+ * the worktree entirely.
+ */
+export async function scanPrefixOf(gitRoot: string, repoRoot: string): Promise<string> {
+  const repoRootReal = await realpath(repoRoot).catch(() => resolve(repoRoot));
+  const gitRootReal = await realpath(gitRoot).catch(() => gitRoot);
+  const prefix = relative(gitRootReal, repoRootReal);
+  // A prefix that climbs out (`..`) or is absolute means the two paths are not
+  // in the ancestor relation git promised; scanning the worktree root is the
+  // only safe reading left, and it is what the pre-0.13 behaviour did.
+  return prefix && !prefix.startsWith("..") && !isAbsolute(prefix) ? prefix : "";
+}
+
+/** The base-side counterpart of `--repo-root`, inside a freshly-added worktree. */
+export function baseRepoRootIn(baseDir: string, scanPrefix: string): string {
+  return scanPrefix ? join(baseDir, scanPrefix) : baseDir;
+}
+
 export async function runDriftReport(
   targetDir: string,
   options: DriftReportOptions,
@@ -90,13 +120,15 @@ export async function runDriftReport(
     return { ran: false, reason: `no merge-base between "${options.base}" and HEAD (unfetched?)` };
   }
 
+  const repoPrefix = await scanPrefixOf(gitRoot, options.repoRoot);
+
   // `cacheDir: null` on BOTH sides. The facts cache is keyed by adapter version
   // + path + content hash and does not include the adapter's own bytes, so a
   // warm entry written while scanning one tree can be served for the other —
   // which would report "no edge changes" precisely when the extractor changed.
   const snapshots = await withBaseWorktree(gitRoot, sha, async (baseDir) => {
     const base = await runSnapshot(targetDir, {
-      repoRoot: baseDir,
+      repoRoot: baseRepoRootIn(baseDir, repoPrefix),
       cacheDir: null,
       ...(options.adapter ? { adapter: options.adapter } : {}),
     });

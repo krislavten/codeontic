@@ -94,13 +94,24 @@ export interface MaterializedModel {
    * a misleading "run codeontic init".
    */
   modelDir: string;
+  /**
+   * The TARGET directory (the one holding `.codeontic/`), so config-shaped
+   * loaders that take a target dir work against the base side unchanged.
+   */
+  targetDir: string;
   cleanup: () => Promise<void>;
 }
 
 /**
  * Writes the model as it existed at `ref` into a temp dir shaped like a target
  * repo (`<tmp>/.codeontic/model/…`), so the normal loader can read it. Only the
- * model tree is materialized — a few dozen small YAML files, not the repo.
+ * model tree plus `.codeontic/config.json` are materialized — a few dozen small
+ * files, not the repo.
+ *
+ * `config.json` comes along because it is what INV-1 *parses* (as opposed to
+ * what INV-1 scans, which is repo source and genuinely needs a checkout). With
+ * it, "this change broke the config" and "the config was already broken on the
+ * trunk" are distinguishable; without it, every unrelated PR inherits the blame.
  *
  * Returns undefined when the ref has no model directory or git fails; the
  * caller fails closed.
@@ -109,18 +120,20 @@ export async function materializeModelAtRef(
   gitRoot: string,
   modelRelDir: string,
   ref: string,
+  extraRelFiles: readonly string[] = [],
 ): Promise<MaterializedModel | undefined> {
   let paths: string[];
   try {
+    // `-z` for the same reason as repoFilesAtRef: without it git C-escapes and
+    // re-quotes any non-ASCII path, and `git show <ref>:<escaped>` then exits
+    // 128 — turning one CJK-named model file into a permanent, and untrue,
+    // "no model at base" for every PR in the repo.
     const { stdout } = await execFileAsync(
       "git",
-      ["ls-tree", "-r", "--name-only", ref, "--", modelRelDir],
+      ["ls-tree", "-r", "-z", "--name-only", ref, "--", modelRelDir],
       { cwd: gitRoot, maxBuffer: 32 * 1024 * 1024 },
     );
-    paths = stdout
-      .split("\n")
-      .map((l) => l.trim().replace(/^"(.*)"$/, "$1"))
-      .filter((l) => l.endsWith(".yaml") || l.endsWith(".yml"));
+    paths = stdout.split("\0").filter((l) => l.endsWith(".yaml") || l.endsWith(".yml"));
   } catch {
     return undefined;
   }
@@ -144,5 +157,38 @@ export async function materializeModelAtRef(
     await cleanup();
     return undefined;
   }
-  return { modelDir: join(dir, ...modelRelDir.split("/")), cleanup };
+
+  // Optional extras: absent at base is a legitimate state (the config may have
+  // been ADDED by this change), so a failure here is not fatal — it just leaves
+  // that file missing on the base side, which is exactly what it was.
+  for (const rel of extraRelFiles) {
+    try {
+      const { stdout } = await execFileAsync("git", ["show", `${ref}:${rel}`], {
+        cwd: gitRoot,
+        maxBuffer: 8 * 1024 * 1024,
+      });
+      const destination = join(dir, ...rel.split(posix.sep));
+      await mkdir(dirname(destination), { recursive: true });
+      await writeFile(destination, stdout, "utf8");
+    } catch {
+      // absent at base — leave it absent.
+    }
+  }
+
+  return {
+    modelDir: join(dir, ...modelRelDir.split("/")),
+    targetDir: join(dir, ...targetRelOf(modelRelDir).split("/").filter(Boolean)),
+    cleanup,
+  };
+}
+
+/** `<x>/.codeontic/model` → `<x>` (the dir a target-dir-taking loader expects). */
+function targetRelOf(modelRelDir: string): string {
+  const parts = modelRelDir.split("/").filter(Boolean);
+  // Strip the trailing `.codeontic/model` when it is there; otherwise keep the
+  // parent, which is the best available guess and still inside the temp root.
+  if (parts.length >= 2 && parts.at(-1) === "model" && parts.at(-2) === ".codeontic") {
+    return parts.slice(0, -2).join("/");
+  }
+  return parts.slice(0, -1).join("/");
 }
