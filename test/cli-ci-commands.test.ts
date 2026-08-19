@@ -732,10 +732,31 @@ describe("gate vs check — no check may be lost in the move", () => {
 
     await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
     const text = out.join("\n");
-    expect(text).toContain("不再运行");
+    expect(text).toContain("整个去掉了");
     // Not the two buckets it used to borrow.
     expect(text).not.toContain("按上面每条的 message 修模型");
     expect(text).not.toContain("JSON 语法");
+  });
+
+  it("a config that was ALREADY broken on the trunk is not described as 'it ran there'", async () => {
+    // The wording has to follow the base state. Telling an author to restore a
+    // config so INV-1 runs again is wrong when that config was malformed on the
+    // trunk and the layer had never started — and deleting it still must fail,
+    // because it makes the missing check permanent and silent.
+    await writeFile(join(repo, ".codeontic", "config.json"), "{ not json at all");
+    await git("add", "-A");
+    await git("commit", "-qm", "trunk carries a broken config");
+    await git("tag", "basepoint");
+
+    await rm(join(repo, ".codeontic", "config.json"));
+    await git("add", "-A");
+    await git("commit", "-qm", "delete the broken config");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("malformed");
+    expect(text).not.toContain("INV-1 ran at the base ref");
   });
 
   it("emptying the model directory fails the gate — vacuous checks are not passing checks", async () => {

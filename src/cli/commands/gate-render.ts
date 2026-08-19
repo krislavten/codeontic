@@ -43,8 +43,9 @@ function guidance(violations: Violation[]): string[] {
     // sent the author to debug YAML syntax or JSON syntax in a file that this
     // change had simply deleted.
     lines.push(
-      "**这次改动让某一层检查不再运行了**（配置或模型被删除）—— 它在 base 上是跑着的。" +
-        "把删掉的东西恢复回来，或者在 PR 里说明这个仓库为什么不再需要这一层。",
+      "**这次改动把某一层检查整个去掉了**（配置或模型被删除）—— 具体是哪一层、base 上它当时是什么" +
+        "状态，看上面每条的 message。把删掉的东西恢复回来（或修好它），或者在 PR 里说明这个仓库" +
+        "为什么不再需要这一层。",
     );
   }
   if (names.has("inv1-write-site")) {

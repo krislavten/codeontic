@@ -322,7 +322,7 @@ describe("clean-verdict caveats stack", () => {
     check: {
       t0: { ok: true, violations: [] },
       debtIds: new Set<string>(),
-      coverage: { inv1Active: true, nodeCount: 1 },
+      coverage: { inv1: "ran" as const, nodeCount: 1 },
     },
     errors: [],
     newErrors: [],

@@ -64,8 +64,17 @@ export interface CheckResult {
 }
 
 export interface CheckCoverage {
-  /** True when the INV-1 layer produced a result — either violations or a loud failure. */
-  inv1Active: boolean;
+  /**
+   * The INV-1 layer's state, as three values rather than a boolean.
+   *
+   * A boolean called `inv1Active` was true on the malformed-config path, where
+   * the layer is configured but never starts. The comparison downstream then
+   * told an author "INV-1 ran at the base ref but not here — restore the
+   * config", about a config that had been broken on the trunk all along. Which
+   * of the three it is changes what the author should do, so the type carries
+   * it instead of the reader guessing.
+   */
+  inv1: "ran" | "configured-but-broken" | "absent";
   /** How many nodes the model contributed. Zero means the model checks had nothing to check. */
   nodeCount: number;
 }
@@ -133,7 +142,7 @@ export async function runCheck(
     return {
       t0,
       debtIds,
-      coverage: { inv1Active: false, nodeCount },
+      coverage: { inv1: "absent", nodeCount },
       ...(baselineViolations ? { baselineViolations } : {}),
     };
   }
@@ -165,7 +174,7 @@ export async function runCheck(
     return {
       t0,
       debtIds,
-      coverage: { inv1Active: true, nodeCount },
+      coverage: { inv1: "configured-but-broken", nodeCount },
       inv1ConfigError: configResult.error,
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
@@ -175,7 +184,7 @@ export async function runCheck(
     return {
       t0,
       debtIds,
-      coverage: { inv1Active: false, nodeCount },
+      coverage: { inv1: "absent", nodeCount },
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
     };
@@ -189,7 +198,7 @@ export async function runCheck(
   return {
     t0,
     debtIds,
-    coverage: { inv1Active: true, nodeCount },
+    coverage: { inv1: "ran", nodeCount },
     inv1,
     ...(diff ? { diff } : {}),
     ...(baselineViolations ? { baselineViolations } : {}),

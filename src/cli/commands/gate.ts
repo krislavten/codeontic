@@ -273,14 +273,22 @@ interface BaseScore {
  */
 function regressionsInCoverage(base: CheckCoverage, head: CheckCoverage): Violation[] {
   const out: Violation[] = [];
-  if (base.inv1Active && !head.inv1Active) {
+  if (base.inv1 !== "absent" && head.inv1 === "absent") {
+    // The base state decides the wording. Telling someone to "restore the
+    // config so INV-1 runs again" is wrong when the config on the trunk was
+    // malformed and the layer had never started — and that difference is
+    // exactly what they need to know to do the right thing next.
     out.push({
       check: COVERAGE_CHECK,
       severity: "error",
       message:
-        "INV-1 ran at the base ref but not here — `.codeontic/config.json` was removed, " +
-        "which switches the canonical-writer check off for this repo from now on. " +
-        "Restore it, or say in the PR why this repo no longer needs it.",
+        base.inv1 === "ran"
+          ? "INV-1 ran at the base ref but not here — `.codeontic/config.json` was removed, " +
+            "which switches the canonical-writer check off for this repo from now on. " +
+            "Restore it, or say in the PR why this repo no longer needs it."
+          : "`.codeontic/config.json` existed at the base ref (malformed, so INV-1 never actually " +
+            "started) and is gone here. Deleting it is not the fix — it makes the missing check " +
+            "permanent and silent. Repair the config, or say in the PR why this repo drops INV-1.",
       identity: "coverage|inv1",
     });
   }
