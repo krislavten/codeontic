@@ -10,7 +10,7 @@ import {
   scanPrefixOf,
 } from "../src/cli/commands/drift-report.js";
 import { renderReportMarkdown, runReport } from "../src/cli/commands/report.js";
-import type { SnapshotDrift } from "../src/cli/commands/snapshot.js";
+import { type SnapshotDrift, runSnapshot } from "../src/cli/commands/snapshot.js";
 import { run } from "../src/cli/run.js";
 import { seedSyntheticModel } from "./support/seed-synthetic-model.js";
 
@@ -95,6 +95,24 @@ describe("runReport", () => {
       error: (l) => logs.push(l),
     });
     expect(code).toBe(0);
+  });
+});
+
+describe("no adapter is 'never ran', not 'found nothing'", () => {
+  it("a snapshot without an adapter marks its edge set unavailable, with a cause", async () => {
+    await seedSyntheticModel(workDir);
+    const snap = await runSnapshot(workDir, { repoRoot: workDir, cacheDir: null });
+    // `[]` would be indistinguishable from "scanned, found none" — which is how
+    // a repo with no adapter got "no service-call edges were added or removed"
+    // on every single PR.
+    expect(snap.topologyEdgesUnavailable).toBeTruthy();
+    expect(snap.topologyEdgesUnavailable).toContain("adapter");
+  });
+
+  it("no repoRoot is reported as its own, more root, cause", async () => {
+    await seedSyntheticModel(workDir);
+    const snap = await runSnapshot(workDir, { cacheDir: null });
+    expect(snap.topologyEdgesUnavailable).toContain("--repo-root");
   });
 });
 

@@ -641,6 +641,30 @@ describe("gate vs check — no check may be lost in the move", () => {
     expect(text).not.toContain("按上面每条的 message 修模型");
   });
 
+  it("an INV-1 violation is told to fix the write site, not the model", async () => {
+    await writeFile(
+      join(repo, ".codeontic", "config.json"),
+      JSON.stringify({
+        guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+      }),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "config");
+    await mkdir(join(repo, "packages", "rogue"), { recursive: true });
+    await writeFile(
+      join(repo, "packages", "rogue", "writer.ts"),
+      "import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n  await db.update(runs).set({ status: 'done' });\n}\n",
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "rogue write");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "HEAD~1"], io);
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("规范写点");
+    expect(text).not.toContain("按上面每条的 message 修模型");
+  });
+
   it("an INV-1 write-site violation fails gate too, not only check", async () => {
     // 0.13.0 dropped INV-1 from the gate wholesale (the base side cannot score
     // an AST scan), so a repo moving its CI from `check` to `gate` lost the

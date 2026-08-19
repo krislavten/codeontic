@@ -683,7 +683,27 @@ export async function runSnapshot(
   let commit = options.commit;
   let topologyEdgesUnavailable: string | undefined;
 
+  if (!options.repoRoot) {
+    // The most root of the causes: nothing was scanned at all. Stated here, on
+    // the snapshot, so every consumer reads ONE authoritative reason instead of
+    // re-deriving it — two places inferring the same thing from different
+    // inputs is how they end up disagreeing.
+    topologyEdgesUnavailable =
+      "no --repo-root: the repo was never scanned, so an empty edge set means 'not checked', not 'none found'";
+  }
+
   if (options.repoRoot) {
+    if (!options.adapter) {
+      // The FIFTH cause of an empty edge list, and the one the four before it
+      // left open: no adapter at all. The whole fact-extraction branch below is
+      // skipped, `topologyEdgesUnavailable` is never set, and zero facts become
+      // `topologyEdges: []` — indistinguishable from "scanned, found none". A
+      // repo without an adapter would then get "no service-call edges were
+      // added or removed" on every single PR: a reading that never ran, phrased
+      // as a result.
+      topologyEdgesUnavailable =
+        "no adapter: fact extraction never ran (an adapter is what knows how to read this repo)";
+    }
     if (options.adapter) {
       // exactOptionalPropertyTypes: only pass cacheDir when the caller set it
       // (undefined = "use the default machine cache", which runFacts handles).

@@ -37,6 +37,15 @@ function guidance(violations: Violation[]): string[] {
         "要么在 PR 里说明为什么它必须先被登记；不是模型写错了。",
     );
   }
+  if (names.has("inv1-write-site")) {
+    // The model is not the thing to change here: a guarded column is written
+    // from outside its canonical writer. Routing this to "fix the model" sends
+    // the author to edit YAML that correctly describes what the code does.
+    lines.push(
+      "有代码在**规范写点之外**写了受保护的状态列 —— 要改的是那处写点（挪回规范写点，" +
+        "或在 `.codeontic/config.json` 的 allowlist 里说明它为什么也是规范的），不是模型。",
+    );
+  }
   if (names.has(CONFIG_CHECK)) {
     // Its own bucket: the thing to fix is a JSON file, and the model is fine.
     // Folding it into "the model contradicts itself" sends the author reading
@@ -46,9 +55,10 @@ function guidance(violations: Violation[]): string[] {
         "修的是这个配置文件，不是模型。",
     );
   }
-  if (
-    [...names].some((n) => !DRIFT_CHECKS.has(n) && n !== CONFIG_CHECK && n !== "baseline-growth")
-  ) {
+  // Checks that already got a bucket of their own above — each names a
+  // different thing to fix, and none of them is "the model is malformed".
+  const OWN_BUCKET = new Set<string>([CONFIG_CHECK, "baseline-growth", "inv1-write-site"]);
+  if ([...names].some((n) => !DRIFT_CHECKS.has(n) && !OWN_BUCKET.has(n))) {
     lines.push(
       "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +
         " —— 按上面每条的 message 修模型。",

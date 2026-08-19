@@ -1390,21 +1390,16 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         } else {
           const drift = diffSnapshots(prior, snapshot);
           // Projected from signals that already exist — never recomputed here
-          // (CONTRIBUTING: 派生判断只定义一处). `edgesSkippedReason` covers the
-          // "broke" case; the adapter check covers the case `Snapshot` calls a
-          // normal empty result but a PR gate must not.
-          const edgesUnavailableReason = drift.edgesSkippedReason
-            ? drift.edgesSkippedReason
-            : !repoRootFlag.value
-              ? // Without --repo-root `runSnapshot` never calls `runFacts`, so
-                // NOTHING was scanned and the edge set is empty for that reason
-                // alone — even though a convention-path adapter did resolve.
-                // Trusting the adapter's presence alone would report "no new
-                // edges" on every PR of a job that simply forgot the flag.
-                "no --repo-root given — the repo was never scanned, so an empty addedEdges means 'not checked', not 'none added'"
-              : !snapshotAdapter.adapter
-                ? "no adapter resolved — no topology edges were extracted, so an empty addedEdges means 'not checked', not 'none added'"
-                : undefined;
+          // (CONTRIBUTING: 派生判断只定义一处). The wording comes from whichever
+          // snapshot produced it; this only picks WHICH one to show.
+          //
+          // THIS run's reason first. `diffSnapshots` reports the previous
+          // snapshot's cause when both sides lack edges, and that one is a
+          // property of a file on disk from some earlier run — true, but not
+          // what the person running this command can act on. When the current
+          // run is itself unable to produce edges, that is the actionable half.
+          const edgesUnavailableReason =
+            snapshot.topologyEdgesUnavailable ?? drift.edgesSkippedReason;
           const edges: DriftJsonEdgeStatus = edgesUnavailableReason
             ? { comparable: false, reason: edgesUnavailableReason }
             : { comparable: true };
