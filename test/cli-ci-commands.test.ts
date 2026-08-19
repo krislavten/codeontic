@@ -763,6 +763,29 @@ describe("gate vs check — no check may be lost in the move", () => {
     expect(text).not.toContain("INV-1 ran at the base ref");
   });
 
+  it("a base where the SCAN could not start is not described as 'INV-1 ran there'", async () => {
+    // Config valid on both sides, but the base has no git checkout for the scan
+    // to use. Writing coverage.inv1 = "ran" just because runInv1Check was called
+    // put back the misattribution the three-state type exists to prevent.
+    const { runCheck } = await import("../src/cli/commands/check.js");
+    const nogit = await mkdtemp(join(tmpdir(), "codeontic-nogit-"));
+    try {
+      await exec("cp", ["-R", `${repo}/.codeontic`, `${nogit}/.codeontic`]);
+      await writeFile(
+        join(nogit, ".codeontic", "config.json"),
+        JSON.stringify({
+          guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+        }),
+      );
+      const result = await runCheck(nogit, { repoRoot: nogit });
+      // The scan could not start here, so this must NOT read as "ran".
+      expect(result.inv1?.ran).toBe(false);
+      expect(result.coverage.inv1).toBe("configured-but-broken");
+    } finally {
+      await rm(nogit, { recursive: true, force: true });
+    }
+  });
+
   it("emptying the model directory fails the gate — vacuous checks are not passing checks", async () => {
     await git("tag", "basepoint");
     const modelDir = join(repo, ".codeontic", "model");

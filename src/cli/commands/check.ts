@@ -198,7 +198,12 @@ export async function runCheck(
   return {
     t0,
     debtIds,
-    coverage: { inv1: "ran", nodeCount },
+    // `ran` follows the scan's own report, not the fact that we called it. A
+    // scan that could not start (no git checkout for `git grep`) produces zero
+    // write points, and calling that "ran" reintroduces exactly the misattribution
+    // the three-state type exists to kill: a PR deleting the config would be told
+    // "INV-1 ran at the base ref", about a layer that never started there either.
+    coverage: { inv1: inv1.ran ? "ran" : "configured-but-broken", nodeCount },
     inv1,
     ...(diff ? { diff } : {}),
     ...(baselineViolations ? { baselineViolations } : {}),

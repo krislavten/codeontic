@@ -38,10 +38,24 @@ export const OWN_BUCKET: ReadonlySet<string> = new Set([
   "inv1-write-site",
 ]);
 
+/**
+ * Whether a finding means "the model points at something that is not there".
+ *
+ * Per-VIOLATION, not per-check-name, because `anchor-crux` carries two
+ * different findings under one name: as a warning it is drift (the quoted text
+ * moved), as an error it is the model contradicting itself (a crux refines an
+ * anchor the node never declared). Classifying by name alone sent the author of
+ * the second one off to update anchors in a source file that was fine.
+ */
+function isDrift(v: Violation): boolean {
+  if (!DRIFT_CHECKS.has(v.check)) return false;
+  return !(v.check === "anchor-crux" && v.severity === "error");
+}
+
 function guidance(violations: Violation[]): string[] {
   const names = new Set(violations.map((v) => v.check));
   const lines: string[] = [];
-  if ([...names].some((n) => DRIFT_CHECKS.has(n))) {
+  if (violations.some(isDrift)) {
     lines.push(
       "模型指向的东西不存在（文件没了 / 符号改名 / 引用的文本改了），或锚点写法不合规 —— " +
         "同 PR 更新对应节点的 `anchors` / `verified_by`，指向它们现在真实的位置。",
@@ -91,7 +105,9 @@ function guidance(violations: Violation[]): string[] {
         "修的是这个配置文件，不是模型。",
     );
   }
-  if ([...names].some((n) => !DRIFT_CHECKS.has(n) && !OWN_BUCKET.has(n))) {
+  // The catch-all sees anything that is neither drift nor its own bucket —
+  // including the anchor-crux ERROR, which `isDrift` deliberately excludes.
+  if (violations.some((v) => !isDrift(v) && !OWN_BUCKET.has(v.check))) {
     lines.push(
       "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +
         " —— 按上面每条的 message 修模型。",

@@ -30,8 +30,6 @@ const CATCH_ALL_IS_CORRECT = new Set([
   "anchor-duplicate",
   "freetext-id-ref",
   "loop-mechanism",
-  "anchor-symbol",
-  "anchor-crux",
 ]);
 
 describe("gate guidance", () => {
@@ -49,8 +47,14 @@ describe("gate guidance", () => {
     expect(unclassified).toEqual([]);
   });
 
-  it("no name is in two buckets at once", () => {
-    for (const n of DRIFT_CHECKS) expect(OWN_BUCKET.has(n)).toBe(false);
-    for (const n of OWN_BUCKET) expect(CATCH_ALL_IS_CORRECT.has(n)).toBe(false);
+  it("no name is in two buckets at once — all three pairs, not just two", () => {
+    // The first version of this checked DRIFT×OWN and OWN×CATCH_ALL but never
+    // DRIFT×CATCH_ALL, so a name listed in both of those (as anchor-symbol and
+    // anchor-crux were) satisfied it — which meant removing one of them from
+    // DRIFT_CHECKS, undoing a real fix, still left the suite green. A pairwise
+    // check that skips a pair is not a pairwise check.
+    for (const n of DRIFT_CHECKS) expect([n, OWN_BUCKET.has(n)]).toEqual([n, false]);
+    for (const n of DRIFT_CHECKS) expect([n, CATCH_ALL_IS_CORRECT.has(n)]).toEqual([n, false]);
+    for (const n of OWN_BUCKET) expect([n, CATCH_ALL_IS_CORRECT.has(n)]).toEqual([n, false]);
   });
 });

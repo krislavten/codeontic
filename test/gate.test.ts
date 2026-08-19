@@ -314,6 +314,29 @@ describe("advisoryCount counts only what falsifies 'model and code agree'", () =
   });
 });
 
+describe("one check name, two different findings", () => {
+  it("a crux ERROR is guided as a model contradiction, not as anchor drift", async () => {
+    // `anchor-crux` is drift when its quoted text moved (a warning) and a model
+    // contradiction when the crux refines an anchor the node never declared (an
+    // error). Classifying by NAME sent the author of the second one to update
+    // anchors in a source file that had nothing wrong with it.
+    const path = join(repo, ".codeontic", "model", "loops", "main.yaml");
+    const original = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      original.replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/synth/main.ts#SynthLoop"]\n  crux:\n    - anchor: "src/synth/never-declared.ts#Nope"\n      text: "x"',
+      ),
+    );
+    const result = await runGate(repo, { repoRoot: repo });
+    expect(result.exitCode).toBe(1);
+    const text = renderGateText(result);
+    expect(text).toContain("模型自身不自洽");
+    expect(text).not.toContain("指向它们现在真实的位置");
+  });
+});
+
 describe("clean-verdict caveats stack", () => {
   /** A clean result carrying both caveats at once. */
   const bothCaveats = {
