@@ -164,6 +164,32 @@ describe("gate — argv-level", () => {
     expect(text).toContain("--strict-anchors");
   });
 
+  it("an unscorable base AND advisory findings both get said — one caveat must not hide the other", async () => {
+    // Shallow-clone CI (no merge-base) plus a model pointing at a deleted file:
+    // an earlier shape returned early on the base caveat and dropped the
+    // advisory one, so the summary mentioned exactly one of the two things that
+    // had not been checked.
+    await rm(join(repo, "src", "synth", "main.ts"));
+    const code = await run(
+      [
+        "gate",
+        repo,
+        "--repo-root",
+        repo,
+        "--base",
+        "refs/heads/does-not-exist",
+        "--format",
+        "github",
+      ],
+      io,
+    );
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("advisory");
+    expect(text).toContain("基线没能打分");
+    expect(text).not.toContain("✅ 模型与代码一致，没有 error。");
+  });
+
   it("RELATIVE paths on the command line still compare correctly", async () => {
     // `gate . --repo-root . --base main` is how a workflow actually writes it.
     // The comparison redacts the roots out of messages; with "." treated as a
@@ -521,8 +547,39 @@ describe("gate vs check — no check may be lost in the move", () => {
     );
     expect(code).toBe(0);
     const text = out.join("\n");
-    expect(text).toContain("NOT scored");
+    // The base caveat is now ADDITIVE (it used to replace the others), so it
+    // reads as "另外：基线没能打分…" rather than as the whole verdict.
+    expect(text).toContain("基线没能打分");
     expect(text).toContain("没查");
+  });
+
+  it("INV-1 configured but unable to scan fails the gate — zero findings is not 'no problems'", async () => {
+    // Config present, but the scan needs `git grep`. A source tree without a
+    // git dir (copied into a Docker image, say) yields zero write points, which
+    // is indistinguishable from a clean scan unless `ran` is checked. `check`
+    // prints a loud "INV-1 scan skipped"; the gate must not be quieter.
+    const copy = await mkdtemp(join(tmpdir(), "codeontic-nogit-"));
+    try {
+      await exec("cp", ["-R", `${repo}/.codeontic`, `${copy}/.codeontic`]);
+      await mkdir(join(copy, "src", "synth"), { recursive: true });
+      await writeFile(
+        join(copy, ".codeontic", "config.json"),
+        JSON.stringify({
+          guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+        }),
+      );
+      const logs: string[] = [];
+      const code = await run(["gate", copy, "--repo-root", copy], {
+        log: (l) => logs.push(l),
+        error: (l) => logs.push(l),
+      });
+      const text = logs.join("\n");
+      expect(text).not.toContain("✅ 模型与代码一致，没有 error。");
+      expect(code).toBe(1);
+      expect(text).toContain("INV-1 did not run");
+    } finally {
+      await rm(copy, { recursive: true, force: true });
+    }
   });
 
   it("an INV-1 write-site violation fails gate too, not only check", async () => {

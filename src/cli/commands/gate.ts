@@ -141,10 +141,29 @@ export function redactRoots(message: string, roots: readonly string[]): string {
  * `.codeontic/config.json` means the INV-1 layer never ran, and a gate that
  * scored that as "no errors" would go green precisely because a check broke.
  */
-/** Findings that ran but cannot block — see `GateResult.advisoryCount`. */
+/**
+ * Check names that mean "the model points at code that is not there". Only
+ * these can falsify the sentence a clean verdict is tempted to print — that the
+ * model and the code agree.
+ */
+export const DRIFT_CHECKS: ReadonlySet<string> = new Set(["anchor-existence", "anchor-format"]);
+
+/**
+ * Advisory findings WORTH mentioning in a clean verdict — deliberately not
+ * "every warning".
+ *
+ * A real repo carries a standing population of warnings (duplicate anchors,
+ * unanalyzable write sites) that say nothing about whether the model still
+ * points at real code — pilot has eight of them today. Counting those would
+ * append a caveat to every green run forever, and a notice that is always there
+ * is one nobody reads. What must not go unsaid is the narrow case:
+ * anchor-existence is advisory by default, so a change that deletes an anchored
+ * file passes, and "模型与代码一致" is then the one clean-verdict sentence that
+ * is actually false.
+ */
 function advisoriesOf(check: CheckResult): Violation[] {
   return [...check.t0.violations, ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : [])].filter(
-    (v) => v.severity === "warning",
+    (v) => v.severity === "warning" && DRIFT_CHECKS.has(v.check),
   );
 }
 
@@ -154,6 +173,7 @@ function errorsOf(check: CheckResult): Violation[] {
     ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : []),
   ];
   if (check.inv1ConfigError) all.push(configViolation(check.inv1ConfigError));
+  if (check.inv1 && !check.inv1.ran) all.push(scanSkippedViolation(check.inv1.skippedReason));
   return all.filter((v) => v.severity === "error");
 }
 
@@ -170,6 +190,25 @@ function configViolation(error: string): Violation {
     check: CONFIG_CHECK,
     severity: "error",
     message: `INV-1 could not run: ${error}`,
+  };
+}
+
+/**
+ * The OTHER way INV-1 fails to run: configured correctly, but the scan itself
+ * could not start (no git checkout for `git grep` — a source tree copied into a
+ * Docker image, say). It produces zero write points, which is indistinguishable
+ * from "scanned everything, found nothing" unless this is checked.
+ *
+ * Same severity as the config error, for the same reason: a gate that goes
+ * green because a check did not execute is worse than one that fails. `check`
+ * already prints a loud "INV-1 scan skipped"; the gate must not be the quieter
+ * of the two.
+ */
+function scanSkippedViolation(reason: string | undefined): Violation {
+  return {
+    check: CONFIG_CHECK,
+    severity: "error",
+    message: `INV-1 did not run: ${reason ?? "scan reported no reason"}`,
   };
 }
 

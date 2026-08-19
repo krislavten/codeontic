@@ -62,10 +62,6 @@ export async function checkAnchorCrux(graph: ModelGraph, repoRoot: string): Prom
         continue;
       }
 
-      // Base-ref mode (gate): the tree was never checked out, so there is no
-      // content to grep. The model-level error above still runs — it is the
-      // only crux finding that gates; the text match below is advisory.
-
       const filePath = anchorFilePath(crux.anchor);
       if (!filePath) continue;
       if (!isParseableSource(filePath)) continue;

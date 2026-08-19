@@ -73,6 +73,20 @@ describe("runReport", () => {
     expect(result.degraded).toBe(true);
   });
 
+  it("--no-cache reaches every section, not just the first", async () => {
+    // Passing it to reconcile alone produced a report with one freshly-scanned
+    // section and one served from a stale cache, with `degraded` still false.
+    await seedSyntheticModel(workDir);
+    const seen: string[][] = [];
+    await runReport(workDir, { repoRoot: workDir, noCache: true }, async (args, io) => {
+      seen.push(args);
+      return run(args, io);
+    });
+    const ran = seen.filter((a) => a[0] !== "coverage");
+    expect(ran.length).toBeGreaterThan(0);
+    for (const args of ran) expect(args).toContain("--no-cache");
+  });
+
   it("report never fails the caller (advisory by construction)", async () => {
     await seedSyntheticModel(workDir);
     const logs: string[] = [];

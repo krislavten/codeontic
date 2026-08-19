@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import type { Violation } from "../../validate/types.js";
-import { CONFIG_CHECK, type GateResult } from "./gate.js";
+import { CONFIG_CHECK, DRIFT_CHECKS, type GateResult } from "./gate.js";
 
 /**
  * Turning a gate verdict into words. This lives in the engine because the
@@ -11,9 +11,6 @@ import { CONFIG_CHECK, type GateResult } from "./gate.js";
  * A workflow that greps stdout has to hardcode a list of causes, and that list
  * is wrong the moment the engine grows a check.
  */
-
-/** Check names that mean "the model points at code that isn't there (anymore)". */
-const DRIFT_CHECKS = new Set(["anchor-existence", "anchor-format"]);
 
 function bullets(violations: Violation[]): string[] {
   return violations.map((v) => {
@@ -54,25 +51,29 @@ export function renderGateText(result: GateResult): string {
   const lines: string[] = [];
   switch (result.verdict) {
     case "clean":
-      if (result.baseUnavailableReason) {
-        lines.push(
-          `gate: passed — nothing wrong at HEAD, but the base was NOT scored (${result.baseUnavailableReason}).`,
-          "所以「有没有新增债务」这一项本次没查——它需要两侧对比才算得出来。",
-        );
-        break;
-      }
+      // Every caveat that applies is stated. An earlier shape returned early on
+      // an unscorable base, which silently dropped the advisory notice — so on
+      // a shallow CI clone (no merge-base) with a model pointing at a deleted
+      // file, the summary said only "nothing wrong at HEAD". Two independent
+      // things were not checked; saying one of them is not better than saying
+      // neither, it is just harder to notice.
       lines.push(
         result.scope === "model-only"
           ? "gate: passed — no MODEL errors. (Model-only run: anchor existence and INV-1 did not run, " +
               "so this is not a statement about the code.)"
           : result.advisoryCount > 0
-            ? `gate: passed — no blocking errors, but ${result.advisoryCount} advisory finding(s) ran and were not counted.`
+            ? `gate: passed — no blocking errors, but the model points at ${result.advisoryCount} file(s) that do not exist (anchor existence is advisory unless --strict-anchors).`
             : "gate: passed — no model errors.",
       );
       if (result.scope !== "model-only" && result.advisoryCount > 0) {
         lines.push(
-          "锚点存在性等检查默认是 advisory —— 它们发现了问题但不影响判定。要它们参与判红，加 --strict-anchors；" +
-            "完整清单跑 `codeontic check`。",
+          "锚点存在性默认是 advisory —— 发现了但不影响判定。要它参与判红，加 --strict-anchors。",
+        );
+      }
+      if (result.baseUnavailableReason) {
+        lines.push(
+          `另外：基线没能打分（${result.baseUnavailableReason}），`,
+          "所以「本次有没有新增债务」这一项没查——它需要两侧对比才算得出来。",
         );
       }
       break;
@@ -109,21 +110,21 @@ export function renderGateMarkdown(result: GateResult): string {
   const out: string[] = ["## codeontic gate", ""];
   switch (result.verdict) {
     case "clean":
-      if (result.baseUnavailableReason) {
-        out.push(
-          `✅ HEAD 本身没有 error，放行。⚠ 但**基线没能打分**（${result.baseUnavailableReason}），`,
-          "所以「本次有没有新增债务」没查——那一项要两侧对比才算得出来。",
-        );
-        break;
-      }
       out.push(
         result.scope === "model-only"
           ? "✅ **模型自身**没有 error。⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，" +
               "所以这条绿不构成「模型与代码一致」的判断。"
           : result.advisoryCount > 0
-            ? `✅ 没有阻断级 error，放行。⚠ 但有 **${result.advisoryCount} 条 advisory 级发现**没参与判定（锚点存在性默认就是 advisory）——**这条绿不等于「模型与代码一致」**。要它们参与判红，加 \`--strict-anchors\`；完整清单跑 \`codeontic check\`。`
+            ? `✅ 没有阻断级 error，放行。⚠ 但**模型指向的 ${result.advisoryCount} 个文件不存在**——锚点存在性默认是 advisory，所以没判红。**这条绿不等于「模型与代码一致」**；要它参与判红，加 \`--strict-anchors\`。`
             : "✅ 模型与代码一致，没有 error。",
       );
+      if (result.baseUnavailableReason) {
+        out.push(
+          "",
+          `⚠ 另外：**基线没能打分**（${result.baseUnavailableReason}），`,
+          "所以「本次有没有新增债务」没查——那一项要两侧对比才算得出来。",
+        );
+      }
       break;
     case "preexisting":
       out.push(

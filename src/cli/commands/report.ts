@@ -46,12 +46,18 @@ export async function runReport(
   const common: string[] = [];
   if (options.repoRoot) common.push("--repo-root", options.repoRoot);
   if (options.adapterPath) common.push("--adapter-path", options.adapterPath);
+  // `--no-cache` belongs to every section that reads the facts cache, not just
+  // the first one. Passing it to reconcile alone produced a report with one
+  // freshly-scanned section and one served from a stale cache — and `degraded`
+  // stayed false, so nothing said the two halves disagreed about which tree
+  // they were describing.
+  if (options.noCache) common.push("--no-cache");
 
   const specs: { title: string; note?: string; args: string[]; requiresRepoRoot?: boolean }[] = [
     {
       title: "实现事实对账（代码里有、模型里没有）",
       note: "方向是 code→model：仓库里的队列/轮询有多少已登记进模型。读数天然偏高，别把它读成「模型覆盖了整个仓库」。",
-      args: ["reconcile", targetDir, ...common, ...(options.noCache ? ["--no-cache"] : [])],
+      args: ["reconcile", targetDir, ...common],
       // Without a repoRoot this command prints the whole CLI usage text to
       // stderr and exits 1. Running it anyway would paste ~40 lines of usage
       // into the report's first code block — noise that reads like output.

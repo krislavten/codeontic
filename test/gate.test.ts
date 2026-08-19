@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { renderGateMarkdown } from "../src/cli/commands/gate-render.js";
+import { renderGateMarkdown, renderGateText } from "../src/cli/commands/gate-render.js";
 import { redactRoots, runGate } from "../src/cli/commands/gate.js";
 import { seedSyntheticModel } from "./support/seed-synthetic-model.js";
 
@@ -235,6 +235,65 @@ describe("runGate", () => {
     expect(md).toContain("config.json");
     // and NOT the wrong instruction to go fix the model
     expect(md).not.toContain("按上面每条的 message 修模型");
+  });
+});
+
+describe("advisoryCount counts only what falsifies 'model and code agree'", () => {
+  it("standing warnings (duplicate anchors) do not append a caveat to every green run", async () => {
+    // pilot carries 8 such warnings permanently. Counting them would put a
+    // notice on every single passing run, which is a notice nobody reads.
+    const path = join(repo, ".codeontic", "model", "loops", "main.yaml");
+    const original = await readFile(path, "utf8");
+    // Two nodes claiming the same anchor → anchor-duplicate (a warning).
+    await writeFile(
+      path,
+      original.replace(
+        'anchors: ["src/synth/dormant.ts#DormantHandler"]',
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+      ),
+    );
+    const result = await runGate(repo, { repoRoot: repo });
+    expect(result.verdict).toBe("clean");
+    expect(result.advisoryCount).toBe(0);
+    expect(renderGateText(result)).toContain("no model errors");
+  });
+
+  it("a deleted anchored file DOES count — that is the case the sentence would lie about", async () => {
+    await rm(join(repo, "src", "synth", "main.ts"));
+    const result = await runGate(repo, { repoRoot: repo });
+    expect(result.verdict).toBe("clean");
+    expect(result.advisoryCount).toBeGreaterThan(0);
+    expect(renderGateText(result)).toContain("do not exist");
+  });
+});
+
+describe("clean-verdict caveats stack", () => {
+  /** A clean result carrying both caveats at once. */
+  const bothCaveats = {
+    verdict: "clean" as const,
+    exitCode: 0 as const,
+    check: { t0: { ok: true, violations: [] }, debtIds: new Set<string>() },
+    errors: [],
+    newErrors: [],
+    scope: "full" as const,
+    advisoryCount: 3,
+    baseUnavailableReason: "no merge-base",
+  };
+
+  // Each renderer is checked SEPARATELY: `--format github` prints both, so an
+  // end-to-end assertion passes as long as either one says the thing — which is
+  // how a regression in the markdown renderer hid behind the text one.
+  it("the text verdict states both", () => {
+    const text = renderGateText(bothCaveats);
+    expect(text).toContain("advisory");
+    expect(text).toContain("基线没能打分");
+  });
+
+  it("the markdown verdict states both", () => {
+    const md = renderGateMarkdown(bothCaveats);
+    expect(md).toContain("advisory");
+    expect(md).toContain("基线没能打分");
+    expect(md).not.toContain("✅ 模型与代码一致，没有 error。");
   });
 });
 
