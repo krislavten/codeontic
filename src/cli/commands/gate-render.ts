@@ -24,8 +24,8 @@ function guidance(violations: Violation[]): string[] {
   const lines: string[] = [];
   if ([...names].some((n) => DRIFT_CHECKS.has(n))) {
     lines.push(
-      "模型指向的文件不存在，或锚点写法不合规 —— 同 PR 更新对应节点的 `anchors` / `verified_by`，" +
-        "指向文件搬迁后的真实位置。",
+      "模型指向的东西不存在（文件没了 / 符号改名 / 引用的文本改了），或锚点写法不合规 —— " +
+        "同 PR 更新对应节点的 `anchors` / `verified_by`，指向它们现在真实的位置。",
     );
   }
   if (names.has("baseline-growth")) {
@@ -98,7 +98,7 @@ function caveats(result: GateResult): string[] {
     out.push("⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，所以这条判定不涉及代码。");
   } else if (result.advisoryCount > 0) {
     out.push(
-      `⚠ 另有 **${result.advisoryCount} 处模型指向的代码找不到**（文件不在，或符号已改名）——锚点这一层默认是 advisory，没参与判定。要它参与判红，加 \`--strict-anchors\`。`,
+      `⚠ 另有 **${result.advisoryCount} 处模型指向的东西找不到**（文件不在、符号已改名，或引用的测试标题/文本已改）——锚点这一层默认是 advisory，没参与判定。文件缺失可以用 \`--strict-anchors\` 提成判红；符号与文本这两类按设计永远只报不挡。`,
     );
   }
   if (result.baseUnavailableReason && result.verdict !== "unverifiable-base") {

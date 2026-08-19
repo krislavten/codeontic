@@ -273,6 +273,33 @@ describe("advisoryCount counts only what falsifies 'model and code agree'", () =
     expect(renderGateText(result)).toContain("找不到");
   });
 
+  it("a renamed TEST TITLE counts too — the same asymmetry, in the same function", async () => {
+    // `verified_by` text anchors are permanently advisory for a good reason
+    // (text matching misfires on an honest reword), but the FILE half of that
+    // very check was already counted. Counting one half and not the other let a
+    // model whose test anchors name nothing real still print 模型与代码一致.
+    //
+    // The fixture ships only `path#symbol` anchors, so the text form has to be
+    // written here — the first version of this test edited the file behind a
+    // SYMBOL anchor and measured no change, because that path was already
+    // counted.
+    const scenario = join(repo, ".codeontic", "model", "scenarios", "GWT-L90-001.yaml");
+    const original = await readFile(scenario, "utf8");
+    await writeFile(
+      scenario,
+      original.replace(
+        'verified_by: ["test/synth/handoff.test.ts#handoff_happy_path"]',
+        'verified_by: [{ file: "test/synth/handoff.test.ts", text: "synth handoff" }]',
+      ),
+    );
+    const before = (await runGate(repo, { repoRoot: repo })).advisoryCount;
+
+    // The quoted title is reworded — the file is still right, the text is not.
+    await writeFile(join(repo, "test", "synth", "handoff.test.ts"), "// something else\n");
+    const result = await runGate(repo, { repoRoot: repo });
+    expect(result.advisoryCount).toBeGreaterThan(before);
+  });
+
   it("a renamed anchored SYMBOL counts too — permanently-advisory is not permanently-invisible", async () => {
     // anchor-symbol is never promoted by --strict-anchors, so it can only ever
     // be reported. Leaving it out of the count let a model whose anchors name

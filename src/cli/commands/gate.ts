@@ -165,6 +165,12 @@ export const DRIFT_CHECKS: ReadonlySet<string> = new Set([
   // real. Being advisory means it must not fail the build; it does not mean the
   // verdict may claim it found nothing.
   "anchor-symbol",
+  // Same shape, same reason: a crux or a `verified_by` text anchor whose quoted
+  // text is no longer in the file it names. The asymmetry this closes sat
+  // inside ONE function — `checkVerifiedByText` counts its "the file is gone"
+  // half and, until now, not its "the text is gone" half, though both mean the
+  // model points at something that is not there.
+  "anchor-crux",
 ]);
 
 /**
