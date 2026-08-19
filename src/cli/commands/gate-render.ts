@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import type { Violation } from "../../validate/types.js";
-import { CONFIG_CHECK, DRIFT_CHECKS, type GateResult } from "./gate.js";
+import { CONFIG_CHECK, COVERAGE_CHECK, DRIFT_CHECKS, type GateResult } from "./gate.js";
 
 /**
  * Turning a gate verdict into words. This lives in the engine because the
@@ -37,6 +37,16 @@ function guidance(violations: Violation[]): string[] {
         "要么在 PR 里说明为什么它必须先被登记；不是模型写错了。",
     );
   }
+  if (names.has(COVERAGE_CHECK)) {
+    // Neither "the model is malformed" nor "the config is malformed": a layer
+    // that used to run does not run any more. Sharing either of those buckets
+    // sent the author to debug YAML syntax or JSON syntax in a file that this
+    // change had simply deleted.
+    lines.push(
+      "**这次改动让某一层检查不再运行了**（配置或模型被删除）—— 它在 base 上是跑着的。" +
+        "把删掉的东西恢复回来，或者在 PR 里说明这个仓库为什么不再需要这一层。",
+    );
+  }
   if (names.has("inv1-write-site")) {
     // The model is not the thing to change here: a guarded column is written
     // from outside its canonical writer. Routing this to "fix the model" sends
@@ -57,7 +67,12 @@ function guidance(violations: Violation[]): string[] {
   }
   // Checks that already got a bucket of their own above — each names a
   // different thing to fix, and none of them is "the model is malformed".
-  const OWN_BUCKET = new Set<string>([CONFIG_CHECK, "baseline-growth", "inv1-write-site"]);
+  const OWN_BUCKET = new Set<string>([
+    CONFIG_CHECK,
+    COVERAGE_CHECK,
+    "baseline-growth",
+    "inv1-write-site",
+  ]);
   if ([...names].some((n) => !DRIFT_CHECKS.has(n) && !OWN_BUCKET.has(n))) {
     lines.push(
       "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +

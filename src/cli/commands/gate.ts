@@ -185,6 +185,14 @@ function errorsOf(check: CheckResult): Violation[] {
  */
 export const CONFIG_CHECK = "codeontic-config";
 
+/**
+ * A check that stopped running between base and HEAD. Its own name because the
+ * action differs from every neighbour: not "fix the model", not "fix the JSON
+ * you broke" — restore what this change removed, or argue in the PR that the
+ * repo no longer needs it.
+ */
+export const COVERAGE_CHECK = "coverage-regression";
+
 function configViolation(error: string): Violation {
   return {
     check: CONFIG_CHECK,
@@ -242,7 +250,7 @@ function regressionsInCoverage(base: CheckCoverage, head: CheckCoverage): Violat
   const out: Violation[] = [];
   if (base.inv1Active && !head.inv1Active) {
     out.push({
-      check: CONFIG_CHECK,
+      check: COVERAGE_CHECK,
       severity: "error",
       message:
         "INV-1 ran at the base ref but not here — `.codeontic/config.json` was removed, " +
@@ -253,7 +261,7 @@ function regressionsInCoverage(base: CheckCoverage, head: CheckCoverage): Violat
   }
   if (base.nodeCount > 0 && head.nodeCount === 0) {
     out.push({
-      check: "schema",
+      check: COVERAGE_CHECK,
       severity: "error",
       message: `the model had ${base.nodeCount} node(s) at the base ref and has none here — every model check now passes because there is nothing left to check`,
       identity: "coverage|model-empty",

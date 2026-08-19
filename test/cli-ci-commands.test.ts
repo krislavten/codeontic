@@ -138,6 +138,18 @@ describe("gate — argv-level", () => {
     expect(text).toContain("没跑");
   });
 
+  it("a boolean flag does not swallow the next argument", async () => {
+    // `--strict-anchors <dir>` used to eat the directory: positionals went
+    // empty (so the target fell back to cwd — a different tree than the caller
+    // named) AND `--strict-anchors` stopped being `true` (so strict mode
+    // silently did not happen). Both loosen the check, and it still exited 0.
+    await rm(join(repo, "src", "synth", "main.ts"));
+    const code = await run(["gate", "--repo-root", repo, "--strict-anchors", repo], io);
+    expect(code).toBe(1); // strict really is on, and the target really is `repo`
+    const text = out.join("\n");
+    expect(text).toContain("anchor-existence");
+  });
+
   it("an error already on the trunk exits 0 through the real command line", async () => {
     await breakAnchor();
     await git("add", "-A");
@@ -693,6 +705,24 @@ describe("gate vs check — no check may be lost in the move", () => {
     const text = out.join("\n");
     expect(text).toContain("INV-1 ran at the base ref but not here");
     expect(text).not.toContain("gate: passed");
+  });
+
+  it("a coverage regression is told to restore what was removed, not to fix YAML/JSON", async () => {
+    await git("tag", "basepoint");
+    const modelDir = join(repo, ".codeontic", "model");
+    for (const sub of ["loops", "flows", "junctions", "scenarios", "features", "baseline"]) {
+      await rm(join(modelDir, sub), { recursive: true, force: true });
+    }
+    await mkdir(modelDir, { recursive: true });
+    await git("add", "-A");
+    await git("commit", "-qm", "empty the model");
+
+    await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    const text = out.join("\n");
+    expect(text).toContain("不再运行");
+    // Not the two buckets it used to borrow.
+    expect(text).not.toContain("按上面每条的 message 修模型");
+    expect(text).not.toContain("JSON 语法");
   });
 
   it("emptying the model directory fails the gate — vacuous checks are not passing checks", async () => {

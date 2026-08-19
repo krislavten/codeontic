@@ -34,7 +34,14 @@ export type CheckName =
    * this one distinct, a config already broken on the trunk compares equal
    * across the two sides instead of being blamed on the next PR.
    */
-  | "codeontic-config";
+  | "codeontic-config"
+  /**
+   * A check that ran at the base ref and does NOT run here — the config it
+   * needed was deleted, the model it examined is empty. Distinct from every
+   * other name because the thing to fix is neither the model nor a finding:
+   * it is that this change removed the ability to look.
+   */
+  | "coverage-regression";
 
 export interface Violation {
   check: CheckName;

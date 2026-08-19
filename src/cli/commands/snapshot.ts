@@ -451,9 +451,16 @@ export function buildSnapshot(
     .filter((f) => f.topology === undefined)
     .map(digestOf)
     .sort((a, b) => factKey(a).localeCompare(factKey(b)));
-  // `null` (not `[]`) ONLY when something broke — see the field's doc. A run
-  // with nothing to compute (no repo-root/adapter) still reports `[]`: that is
-  // a real "no edges", not a failure, and must stay distinguishable from one.
+  // `null` (not `[]`) whenever the edge set could not be COMPUTED — see the
+  // field's doc, and `topologyEdgesUnavailable` above for the cause.
+  //
+  // That includes "no repo-root" and "no adapter". An earlier version called
+  // those a real, empty result, and the consequence was a repo without an
+  // adapter being told "no service-call edges were added or removed" on every
+  // single PR: a reading that never ran, phrased as a result. `[]` is now
+  // reserved for a scan that actually happened and found none. Do not widen it
+  // back — the five causes listed where the flag is set are all the ways this
+  // has been got wrong so far.
   const topologyEdges =
     topologyEdgesUnavailable !== undefined
       ? null
