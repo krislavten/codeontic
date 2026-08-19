@@ -58,7 +58,10 @@ describe("runReport", () => {
     // No adapter anywhere → reconcile reports a skip.
     const result = await runReport(workDir, { repoRoot: workDir }, (args, io) => run(args, io));
     if (result.degraded) {
-      expect(renderReportMarkdown(result)).toContain("管线故障");
+      // The footer states that something is missing WITHOUT guessing why —
+      // naming "adapter not loaded" was wrong for the commonest trigger.
+      expect(renderReportMarkdown(result)).toContain("空白不代表对账通过");
+      expect(renderReportMarkdown(result)).not.toContain("适配器未加载");
     } else {
       // If this environment does resolve an adapter, the section must at least exist.
       expect(result.sections[0]?.lines.length).toBeGreaterThan(0);

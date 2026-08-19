@@ -354,6 +354,22 @@ describe("one check name, two different findings", () => {
   });
 });
 
+describe("an unscorable base disables MORE than the debt check", () => {
+  it("names every pair-dependent judgement, not just debt growth", async () => {
+    // A shallow clone (no merge-base) plus a PR that deletes
+    // `.codeontic/config.json` used to exit 0 in silence: the coverage-regression
+    // detector needs both sides too, and the caveat only mentioned debt.
+    await breakAnchor("loops/main.yaml", ".ts#", "-GONE.ts#");
+    const result = await runGate(repo, {
+      repoRoot: repo,
+      base: "refs/heads/nope",
+    });
+    const text = renderGateText(result) + renderGateMarkdown(result);
+    expect(text).toContain("新增债务");
+    expect(text).toContain("整个关掉");
+  });
+});
+
 describe("clean-verdict caveats stack", () => {
   /** A clean result carrying both caveats at once. */
   const bothCaveats = {

@@ -137,7 +137,7 @@ function caveats(result: GateResult): string[] {
   }
   if (result.baseUnavailableReason && result.verdict !== "unverifiable-base") {
     out.push(
-      `⚠ 基线没能打分（${result.baseUnavailableReason}），所以「本次有没有新增债务」没查——那一项要两侧对比才算得出来。`,
+      `⚠ 基线没能打分（${result.baseUnavailableReason}）。**所有需要两侧对比的判定本次都没跑**：有没有新增债务，以及这次改动有没有把某一层检查整个关掉（删掉 \`.codeontic/config.json\` 或清空模型目录）。这两项都不是「没问题」，是没查。`,
     );
   }
   return out;

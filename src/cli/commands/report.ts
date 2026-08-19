@@ -34,7 +34,15 @@ export interface ReportOptions {
 
 export interface ReportResult {
   sections: ReportSection[];
-  /** True when a section's command reported it could not run (adapter missing, etc.). */
+  /**
+   * True when any section did not produce a full reading.
+   *
+   * Deliberately does NOT name a cause. It used to be rendered as "适配器未加载
+   * / 被跳过", and neither was true for the most common trigger — a run without
+   * the optional `--repo-root`, whose code-scanning section legitimately does
+   * not run. Naming a wrong cause is worse than naming none: the reader goes
+   * looking at the adapter. Each section already states its own reason.
+   */
   degraded: boolean;
 }
 
@@ -131,8 +139,7 @@ export function renderReportMarkdown(result: ReportResult): string {
   }
   if (result.degraded) {
     out.push(
-      "> ⚠ 有小节没能正常产出（适配器未加载 / 被跳过）。**这是管线故障，不是「没查出问题」**——",
-      "> 这一节的空白不代表对账通过。",
+      "> ⚠ 有小节没能完整产出。**空白不代表对账通过**——具体原因写在那一节自己的内容里。",
       "",
     );
   }
@@ -150,7 +157,7 @@ export function renderReportText(result: ReportResult): string {
     out.push(`── ${section.title}`, ...section.lines, "");
   }
   if (result.degraded) {
-    out.push("⚠ 有小节没能正常产出（适配器未加载 / 被跳过）——空白不等于通过。");
+    out.push("⚠ 有小节没能完整产出——空白不等于通过；原因见该节内容。");
   }
   return out.join("\n");
 }
