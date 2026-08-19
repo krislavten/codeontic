@@ -908,11 +908,14 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // again" — both `reconcileFacts` and `checkLoopMechanism` read the same
       // flag so a single run compares apples to apples.
       // `!== true` (not `!== undefined`) matches every other boolean flag in
-      // this file (`strict-anchors`, `strict-adapter`, `no-cache`, `validate`,
-      // ...): `parseFlags` gives a bare `--flag` the value `true`; anything
-      // else (unset, or `--flag value` swallowing a stray token as a string)
-      // is treated as "not set". Established convention, not a gap specific
-      // to this flag.
+      // this file: `parseFlags` gives a bare `--flag` the value `true`, and
+      // anything else means unset.
+      //
+      // This comment used to add "or `--flag value` swallowing a stray token",
+      // and called that an established convention. It was not a convention, it
+      // was the bug: a swallowed token made the flag read as unset AND removed
+      // a positional. `parseFlags` now knows which flags take no value (see
+      // BOOLEAN_FLAGS there), so that case cannot arise.
       const followDelegation = flags["no-follow-delegation"] !== true;
       // Scope reconciliation to the signal kinds it is ABOUT. An adapter that
       // also emits facts of a different nature (topology edges, dependency

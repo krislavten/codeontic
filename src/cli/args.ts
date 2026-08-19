@@ -19,14 +19,24 @@ export interface ParsedArgs {
  * Keeping this list next to the parser rather than per-command is deliberate:
  * one place to add to when a boolean flag is introduced, and the parse stays a
  * pure function of argv.
+ *
+ * A hand-kept list is only as good as the hand — the first version of it missed
+ * three flags, because they were read as `flags.strict === true` and
+ * `flags["no-follow-delegation"] !== true` rather than the one spelling that
+ * was grepped for. `test/args.test.ts` now derives the truth from the
+ * dispatcher's source and fails when the two drift apart, so the next omission
+ * is caught by the suite rather than by a reviewer.
  */
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "strict-anchors",
   "strict-adapter",
+  "strict",
   "no-cache",
+  "no-follow-delegation",
   "drift-json",
   "model-only",
   "validate",
+  "json",
 ]);
 
 /** Minimal `--flag value` / `--flag` (boolean) parser — no dependency for 3 subcommands. */
