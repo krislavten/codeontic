@@ -23,6 +23,7 @@ import { runBacktest } from "./commands/backtest.js";
 import { runCheck } from "./commands/check.js";
 import { runConformance } from "./commands/conformance.js";
 import { runCoverage } from "./commands/coverage.js";
+import { renderDriftMarkdown, renderDriftText, runDriftReport } from "./commands/drift-report.js";
 import { renderGateMarkdown, renderGateText, writeGithubSummary } from "./commands/gate-render.js";
 import { runGate } from "./commands/gate.js";
 import { runGraph } from "./commands/graph.js";
@@ -30,6 +31,12 @@ import { runHookPostEdit, runHookSessionStart } from "./commands/hook.js";
 import { INIT_NEXT_STEPS, runInit } from "./commands/init.js";
 import { runInspect } from "./commands/inspect.js";
 import { runOverview } from "./commands/overview.js";
+import {
+  appendGithubSummary,
+  renderReportMarkdown,
+  renderReportText,
+  runReport,
+} from "./commands/report.js";
 import { runSearchCli } from "./commands/search.js";
 import {
   type SnapshotDrift,
@@ -78,6 +85,8 @@ const USAGE =
   "       codeontic inspect <node-id> [dir] [--depth n]\n" +
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
+  "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; never fails\n" +
+  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; never fails\n" +
   "       codeontic gate [dir] [--repo-root path] [--base ref] [--strict-anchors] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base scores the base ref without checking it out); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
@@ -565,6 +574,79 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       if (result.staleWarning) io.log(`⚠ ${result.staleWarning}`);
       io.log(result.summary);
       io.log(`wrote ${result.outputPath}`);
+      return 0;
+    }
+    case "drift-report": {
+      const driftTargetDir = positionals[0] ?? process.cwd();
+      const driftRepoRoot = readStringFlag(flags, "repo-root");
+      const driftBase = readStringFlag(flags, "base");
+      const driftFormat = readStringFlag(flags, "format");
+      for (const f of [driftRepoRoot, driftBase, driftFormat]) {
+        if (f.error) {
+          io.error(`${f.error}. ${USAGE}`);
+          return 1;
+        }
+      }
+      if (!driftRepoRoot.value || !driftBase.value) {
+        io.error(`drift-report requires --repo-root <path> and --base <ref>. ${USAGE}`);
+        return 1;
+      }
+      if (driftFormat.value !== undefined && driftFormat.value !== "github") {
+        io.error(`--format must be "github" (got "${driftFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      // `gateable: true` — a broken adapter halts here rather than silently
+      // producing an empty edge set, which would read as "no new edges".
+      const driftReportAdapter = await gateAdapter(flags, driftRepoRoot.value, io, true);
+      if ("halt" in driftReportAdapter) return driftReportAdapter.halt;
+      const driftResult = await runDriftReport(driftTargetDir, {
+        repoRoot: resolvePath(driftRepoRoot.value),
+        base: driftBase.value,
+        ...(driftReportAdapter.adapter ? { adapter: driftReportAdapter.adapter } : {}),
+      });
+      io.log(renderDriftText(driftResult));
+      if (driftFormat.value === "github") {
+        const markdown = renderDriftMarkdown(driftResult);
+        if (!(await appendGithubSummary(markdown))) io.log(markdown);
+      }
+      // Advisory: a reading about architecture never fails the caller. When the
+      // comparison could not run, the summary says so in words — that state is
+      // reported, not swallowed, and not turned into a red build either.
+      return 0;
+    }
+    case "report": {
+      // Composition, not reimplementation: each section runs the very command
+      // it names, through this same dispatcher with a capturing io. There is no
+      // second code path to drift from the first.
+      const reportTargetDir = positionals[0] ?? process.cwd();
+      const reportRepoRoot = readStringFlag(flags, "repo-root");
+      const reportAdapter = readStringFlag(flags, "adapter-path");
+      const reportFormat = readStringFlag(flags, "format");
+      for (const f of [reportRepoRoot, reportAdapter, reportFormat]) {
+        if (f.error) {
+          io.error(`${f.error}. ${USAGE}`);
+          return 1;
+        }
+      }
+      if (reportFormat.value !== undefined && reportFormat.value !== "github") {
+        io.error(`--format must be "github" (got "${reportFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      const report = await runReport(
+        reportTargetDir,
+        {
+          ...(reportRepoRoot.value === undefined ? {} : { repoRoot: reportRepoRoot.value }),
+          ...(reportAdapter.value === undefined ? {} : { adapterPath: reportAdapter.value }),
+          ...(flags["no-cache"] === true ? { noCache: true } : {}),
+        },
+        (args, captureIo) => run(args, captureIo),
+      );
+      io.log(renderReportText(report));
+      if (reportFormat.value === "github") {
+        const markdown = renderReportMarkdown(report);
+        if (!(await appendGithubSummary(markdown))) io.log(markdown);
+      }
+      // Advisory by construction: a reading never fails the caller.
       return 0;
     }
     case "gate": {
