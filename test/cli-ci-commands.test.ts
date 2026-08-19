@@ -239,6 +239,246 @@ describe("gate vs check — no check may be lost in the move", () => {
     expect(text).toContain("violation");
   });
 
+  it("a PRE-EXISTING INV-1 violation does not fail a PR that merely touches the file", async () => {
+    // The attribution the worktree replaced: "was the file touched?" blamed a
+    // one-line import edit for a violation that had been sitting on the trunk.
+    // Now both sides scan, and the finding is identical on both.
+    await writeFile(
+      join(repo, ".codeontic", "config.json"),
+      JSON.stringify({
+        guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+      }),
+    );
+    await mkdir(join(repo, "packages", "rogue"), { recursive: true });
+    const writer = join(repo, "packages", "rogue", "writer.ts");
+    await writeFile(
+      writer,
+      "import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n  await db.update(runs).set({ status: 'done' });\n}\n",
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "trunk already has the violation");
+    await git("tag", "basepoint");
+
+    // This change only adds an unrelated import to that same file.
+    await writeFile(writer, `import './unrelated';\n${await readFile(writer, "utf8")}`);
+    await git("add", "-A");
+    await git("commit", "-qm", "touch the file, introduce nothing");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    const text = out.join("\n");
+    expect(text).toContain("inv1-write-site"); // still REPORTED…
+    expect(code).toBe(0); // …but not blamed on this change
+    expect(text).toContain("already present at the base ref");
+  });
+
+  it("an INV-1 violation this change really introduces still fails", async () => {
+    await writeFile(
+      join(repo, ".codeontic", "config.json"),
+      JSON.stringify({
+        guardedTables: { runs: { columns: ["status"], allowlist: ["packages/canonical"] } },
+      }),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "config only");
+    await git("tag", "basepoint");
+
+    await mkdir(join(repo, "packages", "rogue"), { recursive: true });
+    await writeFile(
+      join(repo, "packages", "rogue", "writer.ts"),
+      "import { db } from './db';\nimport { runs } from './schema';\nexport async function f() {\n  await db.update(runs).set({ status: 'done' });\n}\n",
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "introduce the violation");
+
+    const code = await run(["gate", repo, "--repo-root", repo, "--base", "basepoint"], io);
+    expect(code).toBe(1);
+    expect(out.join("\n")).toContain("introduced by this change");
+  });
+
+  it("a './'-prefixed anchor path is resolved the same way on both sides", async () => {
+    // The asymmetry the worktree removed: the base side answered existence from
+    // `git ls-tree` (exact tree paths) while HEAD used `stat` (which normalises
+    // `./x`). An anchor written that way was "missing at base" and "present at
+    // HEAD" forever; delete its file here and both sides said "does not exist",
+    // the keys matched, and a real regression scored as pre-existing.
+    const model = join(repo, ".codeontic", "model", "loops", "main.yaml");
+    await writeFile(
+      model,
+      (await readFile(model, "utf8")).replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["./src/synth/main.ts#SynthLoop"]',
+      ),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "dot-slash anchor");
+    await git("tag", "basepoint");
+
+    // Base is clean (the file is there, under either spelling). This change
+    // deletes it — that is a regression and must be attributed here.
+    await rm(join(repo, "src", "synth", "main.ts"));
+    await git("add", "-A");
+    await git("commit", "-qm", "delete the anchored file");
+
+    const code = await run(
+      ["gate", repo, "--repo-root", repo, "--base", "basepoint", "--strict-anchors"],
+      io,
+    );
+    expect(code).toBe(1);
+    expect(out.join("\n")).toContain("introduced by this change");
+  });
+
+  it("a subdirectory --repo-root is mapped into the base worktree, not flattened to its root", async () => {
+    // The base side is a whole checkout; --repo-root may point into it. Scoring
+    // the worktree ROOT against a subdirectory HEAD makes every anchor "missing
+    // at base" too, so a file this change really deleted compares equal and is
+    // waved through as pre-existing.
+    const svc = join(repo, "services", "api");
+    // Mirror the fixture's OTHER anchor targets under the service root too, so
+    // the only difference between the two sides is the file this change
+    // deletes. Without this the test passes for the wrong reason: the unrelated
+    // anchors resolve differently under the two roots and produce "new" errors
+    // of their own, which would keep it green even with the mapping removed.
+    await mkdir(join(svc, "src", "synth"), { recursive: true });
+    await mkdir(join(svc, "test", "synth"), { recursive: true });
+    await mkdir(join(svc, "docs"), { recursive: true });
+    for (const f of ["main.ts", "dormant.ts"]) {
+      await writeFile(
+        join(svc, "src", "synth", f),
+        "export const SynthLoop = { subphase: 1 };\nexport const SynthDormant = 1;\n",
+      );
+    }
+    await writeFile(join(svc, "test", "synth", "handoff.test.ts"), "// synth handoff\n");
+    await writeFile(join(svc, "docs", "synth-spec.md"), "# handoff_contract\n");
+    await writeFile(join(svc, "src", "handler.ts"), "export const Handler = 1;\n");
+    const model = join(repo, ".codeontic", "model", "loops", "main.yaml");
+    await writeFile(
+      model,
+      (await readFile(model, "utf8")).replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/handler.ts#Handler"]',
+      ),
+    );
+    await git("add", "-A");
+    await git("commit", "-qm", "service with its own anchored file");
+    await git("tag", "basepoint");
+
+    // Base is clean under repoRoot=svc. This change deletes the anchored file.
+    await rm(join(svc, "src", "handler.ts"));
+    await git("add", "-A");
+    await git("commit", "-qm", "delete it");
+
+    const code = await run(
+      ["gate", repo, "--repo-root", svc, "--base", "basepoint", "--strict-anchors"],
+      io,
+    );
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("introduced by this change");
+    // Exactly the deleted file, and nothing dragged in by a scope mismatch.
+    expect(text).toContain("handler.ts");
+    expect(text).toContain("1 error(s) introduced");
+  });
+
+  it("a model that lives in a subdirectory is loaded from the same subdirectory at base", async () => {
+    // targetDir and repoRoot are mapped independently; this covers the target
+    // one. Flattened to the worktree root, the base side finds no model there
+    // and the run degrades into an error about a missing model — which is not
+    // the same thing as "this change broke an anchor".
+    const svc = join(repo, "services", "api");
+    await mkdir(join(svc, "src"), { recursive: true });
+    await writeFile(join(svc, "src", "handler.ts"), "export const Handler = 1;\n");
+    // The model moves WITH the service.
+    await mkdir(join(svc, ".codeontic"), { recursive: true });
+    await exec("cp", ["-R", join(repo, ".codeontic", "model"), join(svc, ".codeontic", "model")]);
+    await rm(join(repo, ".codeontic"), { recursive: true, force: true });
+    const model = join(svc, ".codeontic", "model", "loops", "main.yaml");
+    await writeFile(
+      model,
+      (await readFile(model, "utf8")).replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/handler.ts#Handler"]',
+      ),
+    );
+    // Same de-confounding as above: every other anchor must resolve on both
+    // sides, so the deleted file is the only difference.
+    await mkdir(join(svc, "src", "synth"), { recursive: true });
+    await mkdir(join(svc, "test", "synth"), { recursive: true });
+    await mkdir(join(svc, "docs"), { recursive: true });
+    for (const f of ["main.ts", "dormant.ts"]) {
+      await writeFile(
+        join(svc, "src", "synth", f),
+        "export const SynthLoop = { subphase: 1 };\nexport const SynthDormant = 1;\n",
+      );
+    }
+    await writeFile(join(svc, "test", "synth", "handoff.test.ts"), "// synth handoff\n");
+    await writeFile(join(svc, "docs", "synth-spec.md"), "# handoff_contract\n");
+    await git("add", "-A");
+    await git("commit", "-qm", "model lives with the service");
+    await git("tag", "basepoint");
+
+    await rm(join(svc, "src", "handler.ts"));
+    await git("add", "-A");
+    await git("commit", "-qm", "delete the anchored file");
+
+    const code = await run(
+      ["gate", svc, "--repo-root", svc, "--base", "basepoint", "--strict-anchors"],
+      io,
+    );
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).toContain("1 error(s) introduced");
+    expect(text).toContain("handler.ts");
+    // Not the degraded "no model at base" path.
+    expect(text).not.toContain('run "codeontic init"');
+  });
+
+  it("a base ref from before the model existed fails closed, with an honest reason", async () => {
+    // Real case: a base older than the directory rename. `loadModel` throws on
+    // the base side, and letting that escape crashed the gate with "run
+    // codeontic init" — a message about the temp worktree that reads as a
+    // message about the user's checkout.
+    await rm(join(repo, ".codeontic"), { recursive: true, force: true });
+    await git("add", "-A");
+    await git("commit", "-qm", "before the model existed");
+    await git("tag", "prehistory");
+    await seedSyntheticModel(repo);
+    await breakAnchor();
+    await git("add", "-A");
+    await git("commit", "-qm", "add the model, with a broken anchor");
+
+    const code = await run(
+      ["gate", repo, "--repo-root", repo, "--base", "prehistory", "--strict-anchors"],
+      io,
+    );
+    const text = out.join("\n");
+    expect(code).toBe(1);
+    // Fails CLOSED and says the BASE could not be scored…
+    expect(text).toContain("base");
+    // …not a bare crash telling the author to initialise their repo.
+    expect(text).not.toMatch(/^model directory .* is not found/m);
+  });
+
+  it("a clean HEAD with an unscorable base passes, but SAYS the base was not scored", async () => {
+    // Passing is right (nothing is wrong at HEAD), staying quiet is not: debt
+    // growth needs both sides, so one check genuinely did not run.
+    await rm(join(repo, ".codeontic"), { recursive: true, force: true });
+    await git("add", "-A");
+    await git("commit", "-qm", "before the model existed");
+    await git("tag", "prehistory");
+    await seedSyntheticModel(repo);
+    await git("add", "-A");
+    await git("commit", "-qm", "add a clean model");
+
+    const code = await run(
+      ["gate", repo, "--repo-root", repo, "--base", "prehistory", "--strict-anchors"],
+      io,
+    );
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("NOT scored");
+    expect(text).toContain("没查");
+  });
+
   it("an INV-1 write-site violation fails gate too, not only check", async () => {
     // 0.13.0 dropped INV-1 from the gate wholesale (the base side cannot score
     // an AST scan), so a repo moving its CI from `check` to `gate` lost the

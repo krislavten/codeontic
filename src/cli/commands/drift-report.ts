@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Adapter } from "../../adapters/types.js";
-import { mergeBaseOf } from "../../query/base-tree.js";
+import { mergeBaseOf, withBaseWorktree } from "../../query/base-worktree.js";
 import { gitRootOf } from "../../query/diff.js";
 import { type Snapshot, type SnapshotDrift, diffSnapshots, runSnapshot } from "./snapshot.js";
 
@@ -48,32 +48,6 @@ export interface DriftReportResult {
    * looking for an architecture change that never happened.
    */
   edgesUnavailableReason?: string;
-}
-
-async function withBaseWorktree<T>(
-  gitRoot: string,
-  sha: string,
-  fn: (dir: string) => Promise<T>,
-): Promise<T | undefined> {
-  const parent = await mkdtemp(join(tmpdir(), "codeontic-drift-"));
-  const dir = join(parent, "base");
-  try {
-    await execFileAsync("git", ["worktree", "add", "--detach", dir, sha], { cwd: gitRoot });
-  } catch {
-    await rm(parent, { recursive: true, force: true });
-    return undefined;
-  }
-  try {
-    return await fn(dir);
-  } finally {
-    // Both halves: git forgets the worktree, the filesystem loses the copy.
-    // The hand-written version cleaned up only on the success path, and its
-    // leftovers then collided with the next step's worktree at the same path.
-    await execFileAsync("git", ["worktree", "remove", "--force", dir], { cwd: gitRoot }).catch(
-      () => undefined,
-    );
-    await rm(parent, { recursive: true, force: true });
-  }
 }
 
 /**

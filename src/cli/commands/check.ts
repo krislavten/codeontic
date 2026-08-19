@@ -41,6 +41,12 @@ export interface CheckResult {
   diff?: DiffInfo;
   /** baseline-growth violations from `--diff` (new debt ids vs the base ref). */
   baselineViolations?: Violation[];
+  /**
+   * Every debt node id in the model. Debt growth is a property of two trees,
+   * not one, so the caller comparing two runs (`gate --base`) needs the raw set
+   * — otherwise it would have to re-load the model just to count debt.
+   */
+  debtIds: ReadonlySet<string>;
 }
 
 /**
@@ -100,7 +106,10 @@ export async function runCheck(
     }
   }
 
-  if (!options.repoRoot) return { t0, ...(baselineViolations ? { baselineViolations } : {}) };
+  const debtIds = new Set(load.graph.byKind.debt.keys());
+  if (!options.repoRoot) {
+    return { t0, debtIds, ...(baselineViolations ? { baselineViolations } : {}) };
+  }
 
   // --- diff resolution over the scanned repo (B2) ---
   let diff: DiffInfo | undefined;
@@ -128,6 +137,7 @@ export async function runCheck(
   if (configResult.error) {
     return {
       t0,
+      debtIds,
       inv1ConfigError: configResult.error,
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
@@ -136,6 +146,7 @@ export async function runCheck(
   if (!configResult.config) {
     return {
       t0,
+      debtIds,
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
     };
@@ -148,6 +159,7 @@ export async function runCheck(
   );
   return {
     t0,
+    debtIds,
     inv1,
     ...(diff ? { diff } : {}),
     ...(baselineViolations ? { baselineViolations } : {}),

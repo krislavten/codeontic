@@ -26,14 +26,6 @@ export interface T0Options {
   repoRoot?: string | undefined;
   /** Promote anchor-existence to a blocking check. Default: advisory (warning). */
   strictAnchorExistence?: boolean | undefined;
-  /**
-   * Evaluate anchor existence against this path set instead of the filesystem
-   * — how `gate` scores the model at a base ref without checking that ref out
-   * (query/base-tree.ts). Content-derived findings (anchor-symbol, crux text,
-   * verified_by text) are all advisory and go quiet in this mode, which is
-   * exactly what the gate needs: it compares ERRORS.
-   */
-  repoFileSet?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -71,12 +63,10 @@ export async function runT0(load: LoadResult, options: T0Options = {}): Promise<
     violations.push(
       ...(await checkAnchorExistence(load.graph, options.repoRoot, {
         strict: options.strictAnchorExistence,
-        fileSet: options.repoFileSet,
       })),
-      ...(await checkAnchorCrux(load.graph, options.repoRoot, { fileSet: options.repoFileSet })),
+      ...(await checkAnchorCrux(load.graph, options.repoRoot)),
       ...(await checkVerifiedByText(load.graph, options.repoRoot, {
         strict: options.strictAnchorExistence,
-        fileSet: options.repoFileSet,
       })),
     );
   }

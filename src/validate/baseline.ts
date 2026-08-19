@@ -8,7 +8,10 @@ import type { Violation } from "./types.js";
  * wording change "扩大了既有债务" is a semantic call, not a mechanical
  * one, and belongs to human review, not T0.
  */
-export function checkBaselineOnlyDecreases(before: Set<string>, after: Set<string>): Violation[] {
+export function checkBaselineOnlyDecreases(
+  before: ReadonlySet<string>,
+  after: ReadonlySet<string>,
+): Violation[] {
   const added = [...after].filter((id) => !before.has(id));
   return added.map((id) => ({
     check: "baseline-growth",

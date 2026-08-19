@@ -43,11 +43,7 @@ export function fileContainsCruxText(content: string, text: string): boolean {
  * Also validates that each crux's `anchor` references one of the node's
  * own `anchors` (referential integrity within the node).
  */
-export async function checkAnchorCrux(
-  graph: ModelGraph,
-  repoRoot: string,
-  options: { fileSet?: ReadonlySet<string> | undefined } = {},
-): Promise<Violation[]> {
+export async function checkAnchorCrux(graph: ModelGraph, repoRoot: string): Promise<Violation[]> {
   const violations: Violation[] = [];
 
   for (const node of [...graph.byKind.loop.values(), ...graph.byKind.flow.values()]) {
@@ -69,7 +65,6 @@ export async function checkAnchorCrux(
       // Base-ref mode (gate): the tree was never checked out, so there is no
       // content to grep. The model-level error above still runs — it is the
       // only crux finding that gates; the text match below is advisory.
-      if (options.fileSet) continue;
 
       const filePath = anchorFilePath(crux.anchor);
       if (!filePath) continue;

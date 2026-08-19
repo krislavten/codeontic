@@ -51,15 +51,6 @@ export interface AnchorPresenceRequest {
   anchors: Iterable<string>;
   /** `{file, text}` test anchors, matched with the crux matcher. */
   textAnchors?: Iterable<TestTextAnchor> | undefined;
-  /**
-   * Answer existence from this set instead of the filesystem — the base-ref
-   * mode used by `gate` (see query/base-tree.ts): the base tree is never
-   * checked out, so there is nothing to stat and nothing to read. Content-
-   * derived staleness therefore stays EMPTY, which is this module's existing
-   * "unknown, not stale" outcome for any file it cannot read — not a claim
-   * that every anchor is fresh.
-   */
-  fileSet?: ReadonlySet<string> | undefined;
 }
 
 /**
@@ -108,11 +99,6 @@ export async function resolveAnchorPresence(
   const existingFiles = new Set<string>();
   const staleSymbolAnchors = new Set<string>();
   const staleTextAnchors = new Set<string>();
-
-  if (request.fileSet) {
-    for (const file of files) if (request.fileSet.has(file)) existingFiles.add(file);
-    return { existingFiles, staleSymbolAnchors, staleTextAnchors };
-  }
 
   await Promise.all(
     [...files].map(async (file) => {

@@ -1,12 +1,7 @@
-import { realpath } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
-import { CODEONTIC_CONFIG_RELATIVE_PATH } from "../../config/config-file.js";
-import { loadModel } from "../../loader/load-model.js";
-import { materializeModelAtRef, mergeBaseOf, repoFilesAtRef } from "../../query/base-tree.js";
+import { mergeBaseOf, pathInBaseWorktree, withBaseWorktree } from "../../query/base-worktree.js";
 import { gitRootOf } from "../../query/diff.js";
+import { checkBaselineOnlyDecreases } from "../../validate/baseline.js";
 import { inv1ViolationsFrom } from "../../validate/inv1/check.js";
-import { loadInv1Config } from "../../validate/inv1/config.js";
-import { runT0 } from "../../validate/t0.js";
 import type { Violation } from "../../validate/types.js";
 import { type CheckResult, runCheck } from "./check.js";
 
@@ -81,11 +76,32 @@ export interface GateResult {
  * reads as new for one release. That direction is safe (the gate fires when it
  * should not, and someone looks); the other direction is a silent pass.
  */
-function violationKey(v: Violation): string {
+function violationKey(v: Violation, roots: readonly string[] = []): string {
   // NUL as the separator, written as an ESCAPE — a literal NUL byte in a source
   // file makes git treat the whole file as binary, and its diff silently
   // disappears from every review and every `git diff` from then on.
-  return [v.check, v.nodeId ?? "", v.file ?? "", v.message].join("\u0000");
+  return [v.check, v.nodeId ?? "", v.file ?? "", redactRoots(v.identity ?? v.message, roots)].join(
+    "\u0000",
+  );
+}
+
+/**
+ * Replaces absolute checkout paths in a message with a placeholder.
+ *
+ * Messages are part of the comparison key (that is what catches a SECOND
+ * breakage on an already-broken node), and several of them quote the root they
+ * were scored against — "…does not exist under /path/to/repo". The base side
+ * now runs in a temp worktree, so that path differs on the two sides by
+ * construction: without this, EVERY pre-existing finding reads as new and the
+ * gate blocks every PR in the repo. Longest-first so a nested root (repoRoot
+ * inside the worktree) is replaced before its parent.
+ */
+function redactRoots(message: string, roots: readonly string[]): string {
+  let out = message;
+  for (const root of [...roots].filter(Boolean).sort((a, b) => b.length - a.length)) {
+    out = out.split(root).join("<root>");
+  }
+  return out;
 }
 
 /**
@@ -93,13 +109,12 @@ function violationKey(v: Violation): string {
  * from `check` to `gate` must not quietly lose a check — that is a downgrade
  * disguised as an upgrade, and nothing in the output would say so.
  *
- * The two error sources have different ATTRIBUTION mechanics, handled below by
- * `DIFF_ATTRIBUTED` rather than by dropping anything here:
- *  - T0 and the config parse are scored on both sides (base from git plumbing),
- *    so "already broken at base" is answerable and pre-existing debt does not
- *    block unrelated work;
- *  - baseline-growth and INV-1 are computed against the base ref by `check`
- *    itself, so they are about this change by construction.
+ * There is no per-check attribution logic here, and that is the point: the base
+ * side runs THIS SAME FUNCTION over a checkout of the base ref, so a finding is
+ * "new" iff it is absent from the other side's set. Every earlier attempt to
+ * decide attribution check-by-check (drop INV-1; attribute it by touched files;
+ * score anchors from a git tree while HEAD used `stat`) produced a different
+ * wrong answer per check — see base-worktree.ts.
  *
  * `inv1ConfigError` counts as an error of its own. A malformed
  * `.codeontic/config.json` means the INV-1 layer never ran, and a gate that
@@ -108,7 +123,6 @@ function violationKey(v: Violation): string {
 function errorsOf(check: CheckResult): Violation[] {
   const all: Violation[] = [
     ...check.t0.violations,
-    ...(check.baselineViolations ?? []),
     ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : []),
   ];
   if (check.inv1ConfigError) all.push(configViolation(check.inv1ConfigError));
@@ -116,28 +130,10 @@ function errorsOf(check: CheckResult): Violation[] {
 }
 
 /**
- * Findings that are ALREADY about this change, so comparing them against the
- * base would be wrong twice over — the base cannot produce them, and they would
- * therefore always read as new anyway.
- *
- * Both kinds here are computed relative to the base ref by `check` itself:
- *  - `baseline-growth` IS the comparison ("the debt list shrank since base");
- *  - `inv1-write-site`, once `diffBase` is set, scans ONLY the files this change
- *    touched (`onlyFiles`), so a violation it reports is in a file this change
- *    edited. This is what makes INV-1 gate-able without checking the base out —
- *    the previous release excluded it wholesale, which meant a repo that moved
- *    its CI from `check` to `gate` silently lost INV-1 enforcement.
- */
-const DIFF_ATTRIBUTED = new Set<string>(["baseline-growth", "inv1-write-site"]);
-
-/**
- * A broken `.codeontic/config.json` as a comparable finding. Its own check name
- * (not `inv1-write-site`) matters twice: the base side can produce the identical
- * key — config is PARSED, and parsing needs only `git show`, unlike the AST scan
- * INV-1 performs — so a trunk-side breakage compares equal and reads as
- * pre-existing instead of being blamed on whoever opened the next PR; and the
- * guidance can name the config file rather than telling the author to "fix the
- * model", which is not where the problem is.
+ * A broken `.codeontic/config.json` as a comparable finding, under its own check
+ * name rather than INV-1's: "INV-1 found a bad write site" and "INV-1 could not
+ * start" call for opposite actions, and the guidance below keys off the name to
+ * point at the config file instead of telling the author to fix the model.
  */
 export const CONFIG_CHECK = "codeontic-config";
 
@@ -149,85 +145,71 @@ function configViolation(error: string): Violation {
   };
 }
 
+/** Everything the base side yields: the same errors, plus the debt ids to diff. */
+interface BaseScore {
+  errors: Violation[];
+  debtIds: ReadonlySet<string>;
+  /** The base-side absolute paths, so the comparison can redact them out. */
+  roots: string[];
+}
+
 /**
- * Score the model as it stood at `base`, without checking that ref out: the
- * model's YAML comes from `git show`, anchor existence from `git ls-tree`.
- * Returns undefined when anything about the base is unusable — the caller must
- * fail closed rather than treat "could not score the base" as "the base was
- * clean" or "the base was equally broken".
+ * Score the base ref by CHECKING IT OUT and running the identical check.
+ *
+ * Returns a reason instead of a score whenever anything is off. Failing closed
+ * matters more here than anywhere else in the command: "could not score the
+ * base" silently treated as "the base was equally broken" is how a gate passes
+ * a change that broke something.
  */
-async function errorsAtBase(
+async function scoreBase(
   targetDir: string,
-  options_repoRoot: string,
+  repoRoot: string,
   base: string,
   strict: boolean | undefined,
-): Promise<{ errors: Violation[] } | { reason: string }> {
-  const gitRoot = await gitRootOf(options_repoRoot);
-  if (!gitRoot) return { reason: `${options_repoRoot} is not inside a git checkout` };
+): Promise<BaseScore | { reason: string }> {
+  const gitRoot = await gitRootOf(repoRoot);
+  if (!gitRoot) return { reason: `${repoRoot} is not inside a git checkout` };
 
   const mergeBase = await mergeBaseOf(gitRoot, base);
   if (!mergeBase) return { reason: `no merge-base between "${base}" and HEAD (unfetched ref?)` };
 
-  // Anchors resolve against repoRoot, so the base set must speak the same
-  // coordinates — otherwise every anchor reads as absent at base, and a file
-  // this change really deleted produces the same message on both sides.
-  const repoRootReal = await realpath(options_repoRoot).catch(() => resolve(options_repoRoot));
-  const gitRootRealForFiles = await realpath(gitRoot).catch(() => gitRoot);
-  const repoPrefix = relative(gitRootRealForFiles, repoRootReal).split(/[/\\]/).join("/");
-  const files = await repoFilesAtRef(gitRoot, mergeBase, repoPrefix || undefined);
-  if (!files) return { reason: `could not list the tree at ${mergeBase.slice(0, 12)}` };
-
-  // The model dir is expressed relative to the git root, since that is what git
-  // pathspecs take — `targetDir` may sit deeper than the checkout root.
-  // Both sides are realpath'd first: git reports the resolved root, while the
-  // caller's path may run through a symlink (on macOS every $TMPDIR does), and
-  // a raw prefix-slice of two differently-spelled absolute paths silently
-  // produces a pathspec that matches nothing — which would read as "no model at
-  // base" and fail the gate closed for a reason that isn't true.
-  const modelAbs = await realpath(join(targetDir, ".codeontic", "model")).catch(() =>
-    resolve(targetDir, ".codeontic", "model"),
-  );
-  const gitRootReal = await realpath(gitRoot).catch(() => gitRoot);
-  const modelRelDir = relative(gitRootReal, modelAbs).split(/[/\\]/).join("/");
-  const targetRel = relative(gitRootReal, await realpath(targetDir).catch(() => resolve(targetDir)))
-    .split(/[/\\]/)
-    .join("/");
-  const configRel = [targetRel, CODEONTIC_CONFIG_RELATIVE_PATH.split(sep).join("/")]
-    .filter(Boolean)
-    .join("/");
-  const materialized = await materializeModelAtRef(gitRoot, modelRelDir, mergeBase, [configRel]);
-  if (!materialized) {
-    return { reason: `no model under "${modelRelDir}" at ${mergeBase.slice(0, 12)}` };
-  }
-
-  try {
-    const load = await loadModel(materialized.modelDir);
-    const t0 = await runT0(load, {
-      repoRoot: options_repoRoot,
-      strictAnchorExistence: strict,
-      repoFileSet: files,
-    });
-    const errors = t0.violations.filter((v) => v.severity === "error");
-    // Same parse the HEAD side runs, against the base's own config bytes.
-    const baseConfig = await loadInv1Config(materialized.targetDir);
-    if (baseConfig.error) errors.push(configViolation(baseConfig.error));
-    return { errors };
-  } finally {
-    await materialized.cleanup();
-  }
+  const scored = await withBaseWorktree(gitRoot, mergeBase, async (baseDir) => {
+    // Anything the base check throws becomes a REASON, never an exception:
+    // a base ref from before the model existed (or from before it was renamed)
+    // makes `loadModel` throw, and letting that escape turns the gate into a
+    // crash whose message — "run codeontic init" — describes the base tree
+    // while appearing to describe the user's checkout.
+    try {
+      // The two paths are mapped INDIVIDUALLY: `--repo-root` may be a
+      // subdirectory of the checkout, or the model may live outside the scanned
+      // package. Assuming either equals the worktree root scans a different
+      // scope than HEAD did, and every finding on both sides becomes noise.
+      const baseTarget = await pathInBaseWorktree(gitRoot, targetDir, baseDir);
+      const baseRepoRoot = await pathInBaseWorktree(gitRoot, repoRoot, baseDir);
+      const check = await runCheck(baseTarget, {
+        repoRoot: baseRepoRoot,
+        strictAnchorExistence: strict,
+      });
+      return { errors: errorsOf(check), debtIds: check.debtIds, roots: [baseTarget, baseRepoRoot] };
+    } catch (err) {
+      return {
+        reason: `scoring ${mergeBase.slice(0, 12)} failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  });
+  if (!scored) return { reason: `could not check out ${mergeBase.slice(0, 12)}` };
+  return scored;
 }
 
 export async function runGate(targetDir: string, options: GateOptions = {}): Promise<GateResult> {
+  // No `diffBase`: the base side runs the identical call over a checkout, so
+  // both sides must see the SAME scope. Handing HEAD a diff base would narrow
+  // INV-1 to the touched files on one side and scan everything on the other,
+  // and the set difference would then report every untouched pre-existing
+  // violation as removed and every touched one as new.
   const check = await runCheck(targetDir, {
     repoRoot: options.repoRoot,
     strictAnchorExistence: options.strictAnchorExistence,
-    // Passing the base through is what makes two whole checks work at all:
-    // `baseline-growth` is computed only when there is a base to grow from, and
-    // INV-1 narrows its AST scan to the touched files. Omitting it — the 0.13.0
-    // shape — left `baselineViolations` permanently undefined (so `gate --base`
-    // never ran a check that `check --diff` fails on) and made INV-1 scan the
-    // whole repo for a result the gate then threw away.
-    ...(options.base ? { diffBase: options.base } : {}),
   });
   const errors = errorsOf(check);
   const scope = options.repoRoot ? ("full" as const) : ("model-only" as const);
@@ -251,20 +233,38 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
         "so an empty result would mean 'not checked', not 'clean'",
     };
   }
-  if (errors.length === 0) {
-    return { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope };
-  }
   if (!options.base) {
-    return { verdict: "new-errors", exitCode: 1, check, errors, newErrors: errors, scope };
+    return errors.length === 0
+      ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope }
+      : { verdict: "new-errors", exitCode: 1, check, errors, newErrors: errors, scope };
   }
 
-  const base = await errorsAtBase(
+  // The base side runs even when HEAD is clean, because one finding is not
+  // visible in HEAD's error set at all: debt that GREW. That is a comparison
+  // between two debt id sets, and a repo whose only fault is a newly registered
+  // debt node has an empty HEAD error set.
+  const base = await scoreBase(
     targetDir,
     options.repoRoot as string,
     options.base,
     options.strictAnchorExistence,
   );
   if ("reason" in base) {
+    // A clean HEAD with an unscorable base is not a failure: there is nothing
+    // to attribute, so there is nothing the missing baseline could change. It
+    // is still SAID, because one thing genuinely was not checked — debt growth
+    // is a property of the pair, and without a base there is no pair.
+    if (errors.length === 0) {
+      return {
+        verdict: "clean",
+        exitCode: 0,
+        check,
+        errors,
+        newErrors: [],
+        scope,
+        baseUnavailableReason: base.reason,
+      };
+    }
     return {
       verdict: "unverifiable-base",
       exitCode: 1,
@@ -276,15 +276,21 @@ export async function runGate(targetDir: string, options: GateOptions = {}): Pro
     };
   }
 
-  // Split before comparing, rather than relying on the base side happening not
-  // to produce these keys: that would be an invisible coupling, and the day the
-  // base side learns to score one of them it would start cancelling findings
-  // that are by definition about this change.
-  const baseKeys = new Set(base.errors.map(violationKey));
-  const newErrors = errors.filter(
-    (v) => DIFF_ATTRIBUTED.has(v.check) || !baseKeys.has(violationKey(v)),
-  );
-  return newErrors.length > 0
-    ? { verdict: "new-errors", exitCode: 1, check, errors, newErrors, scope }
+  // Each side's own roots are redacted from its own messages, so the two keys
+  // meet on the same text.
+  const headRoots = [targetDir, options.repoRoot as string];
+  const baseKeys = new Set(base.errors.map((v) => violationKey(v, base.roots)));
+  const newErrors = errors.filter((v) => !baseKeys.has(violationKey(v, headRoots)));
+  // Debt growth is a property of the PAIR, not of either side — it exists only
+  // once both debt id sets are in hand, so it is computed here and is new by
+  // construction.
+  newErrors.push(...checkBaselineOnlyDecreases(base.debtIds, check.debtIds));
+
+  const allErrors = [...errors, ...newErrors.filter((v) => !errors.includes(v))];
+  if (newErrors.length > 0) {
+    return { verdict: "new-errors", exitCode: 1, check, errors: allErrors, newErrors, scope };
+  }
+  return errors.length === 0
+    ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope }
     : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [], scope };
 }

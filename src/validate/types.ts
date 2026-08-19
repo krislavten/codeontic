@@ -42,6 +42,19 @@ export interface Violation {
   message: string;
   file?: string;
   nodeId?: string;
+  /**
+   * Stable identity for "is this the SAME finding as that one", across two
+   * trees. Optional: when absent, comparers fall back to the message, which is
+   * right for findings whose text is fully determined by the model.
+   *
+   * It exists because some messages carry position (`file.ts:42`), and position
+   * moves for reasons that are not the finding: adding an unrelated import one
+   * line above a long-standing INV-1 violation would otherwise make it read as
+   * newly introduced, and block a PR that introduced nothing. Only the check
+   * that produced a finding knows which parts of its text are the finding and
+   * which are where it happened to be today.
+   */
+  identity?: string;
 }
 
 export interface T0Result {

@@ -54,6 +54,13 @@ export function renderGateText(result: GateResult): string {
   const lines: string[] = [];
   switch (result.verdict) {
     case "clean":
+      if (result.baseUnavailableReason) {
+        lines.push(
+          `gate: passed — nothing wrong at HEAD, but the base was NOT scored (${result.baseUnavailableReason}).`,
+          "所以「有没有新增债务」这一项本次没查——它需要两侧对比才算得出来。",
+        );
+        break;
+      }
       lines.push(
         result.scope === "model-only"
           ? "gate: passed — no MODEL errors. (Model-only run: anchor existence and INV-1 did not run, " +
@@ -94,6 +101,13 @@ export function renderGateMarkdown(result: GateResult): string {
   const out: string[] = ["## codeontic gate", ""];
   switch (result.verdict) {
     case "clean":
+      if (result.baseUnavailableReason) {
+        out.push(
+          `✅ HEAD 本身没有 error，放行。⚠ 但**基线没能打分**（${result.baseUnavailableReason}），`,
+          "所以「本次有没有新增债务」没查——那一项要两侧对比才算得出来。",
+        );
+        break;
+      }
       out.push(
         result.scope === "model-only"
           ? "✅ **模型自身**没有 error。⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，" +

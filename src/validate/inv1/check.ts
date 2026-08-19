@@ -121,6 +121,10 @@ export function inv1ViolationsFrom(result: Inv1CheckResult): Violation[] {
       severity: wp.verdict === "violation" ? "error" : "warning",
       message: `${wp.reason} — ${wp.filePath}:${wp.line} (${wp.snippet})`,
       file: wp.filePath,
+      // Deliberately WITHOUT the line: an edit elsewhere in the file shifts it,
+      // and a shifted long-standing violation is not a new one. The snippet
+      // keeps two distinct write sites in one file apart.
+      identity: `${wp.reason}|${wp.filePath}|${wp.snippet}`,
     });
   }
   return out;
