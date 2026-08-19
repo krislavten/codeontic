@@ -239,9 +239,13 @@ describe("runGate", () => {
 });
 
 describe("advisoryCount counts only what falsifies 'model and code agree'", () => {
-  it("standing warnings (duplicate anchors) do not append a caveat to every green run", async () => {
+  it("standing warnings (duplicate anchors) do not add to the count", async () => {
     // pilot carries 8 such warnings permanently. Counting them would put a
     // notice on every single passing run, which is a notice nobody reads.
+    // Measured as a DELTA against the same repo, because the fixture already
+    // carries an unrelated advisory of its own.
+    const before = (await runGate(repo, { repoRoot: repo })).advisoryCount;
+
     const path = join(repo, ".codeontic", "model", "loops", "main.yaml");
     const original = await readFile(path, "utf8");
     // Two nodes claiming the same anchor → anchor-duplicate (a warning).
@@ -254,16 +258,32 @@ describe("advisoryCount counts only what falsifies 'model and code agree'", () =
     );
     const result = await runGate(repo, { repoRoot: repo });
     expect(result.verdict).toBe("clean");
-    expect(result.advisoryCount).toBe(0);
-    expect(renderGateText(result)).toContain("no model errors");
+    // The duplicate contributed nothing…
+    expect(result.advisoryCount).toBeLessThanOrEqual(before);
   });
 
   it("a deleted anchored file DOES count — that is the case the sentence would lie about", async () => {
+    const before = (await runGate(repo, { repoRoot: repo })).advisoryCount;
     await rm(join(repo, "src", "synth", "main.ts"));
     const result = await runGate(repo, { repoRoot: repo });
     expect(result.verdict).toBe("clean");
-    expect(result.advisoryCount).toBeGreaterThan(0);
-    expect(renderGateText(result)).toContain("do not exist");
+    expect(result.advisoryCount).toBeGreaterThan(before);
+    // …and the verdict must stop claiming the model and the code agree.
+    expect(renderGateText(result)).not.toContain("no model errors");
+    expect(renderGateText(result)).toContain("找不到");
+  });
+
+  it("a renamed anchored SYMBOL counts too — permanently-advisory is not permanently-invisible", async () => {
+    // anchor-symbol is never promoted by --strict-anchors, so it can only ever
+    // be reported. Leaving it out of the count let a model whose anchors name
+    // nothing real still print 模型与代码一致.
+    const before = (await runGate(repo, { repoRoot: repo })).advisoryCount;
+    await writeFile(
+      join(repo, "src", "synth", "main.ts"),
+      "export const TotallyRenamed = { subphase: 1 };\n",
+    );
+    const result = await runGate(repo, { repoRoot: repo });
+    expect(result.advisoryCount).toBeGreaterThan(before);
   });
 });
 
@@ -281,6 +301,7 @@ describe("clean-verdict caveats stack", () => {
     newErrors: [],
     scope: "full" as const,
     advisoryCount: 3,
+    comparedToBase: false,
     baseUnavailableReason: "no merge-base",
   };
 
@@ -298,6 +319,20 @@ describe("clean-verdict caveats stack", () => {
     expect(md).toContain("advisory");
     expect(md).toContain("基线没能打分");
     expect(md).not.toContain("✅ 模型与代码一致，没有 error。");
+  });
+});
+
+describe("caveats appear under EVERY verdict, not just clean", () => {
+  it("a model-only run says so even when it FAILS", async () => {
+    await breakAnchor("loops/main.yaml", ".ts#", "-GONE.ts#");
+    // Model-only: no repoRoot. A schema-level error still fails it.
+    const bad = join(repo, ".codeontic", "model", "loops", "broken.yaml");
+    await writeFile(bad, "id: 123\nkind: not-a-kind\n");
+    const result = await runGate(repo, {});
+    expect(result.scope).toBe("model-only");
+    expect(result.exitCode).toBe(1);
+    expect(renderGateText(result)).toContain("model-only");
+    expect(renderGateMarkdown(result)).toContain("model-only");
   });
 });
 

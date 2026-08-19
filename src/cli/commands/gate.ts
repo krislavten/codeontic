@@ -66,6 +66,14 @@ export interface GateResult {
    */
   scope: "full" | "model-only";
   /**
+   * True only when the findings were actually diffed against a base ref.
+   *
+   * `new-errors` names a comparison result, and without `--base` no comparison
+   * happened — every error is reported, old and new alike. Saying "introduced
+   * by this change" there points the author at code they never touched.
+   */
+  comparedToBase: boolean;
+  /**
    * Findings that RAN and had something to say, but at warning severity, so
    * they could not affect the exit code.
    *
@@ -146,7 +154,18 @@ export function redactRoots(message: string, roots: readonly string[]): string {
  * these can falsify the sentence a clean verdict is tempted to print — that the
  * model and the code agree.
  */
-export const DRIFT_CHECKS: ReadonlySet<string> = new Set(["anchor-existence", "anchor-format"]);
+export const DRIFT_CHECKS: ReadonlySet<string> = new Set([
+  "anchor-existence",
+  "anchor-format",
+  // The file is there but the symbol is not — the model names code that no
+  // longer exists under that name. It is permanently advisory (the engine rates
+  // symbol resolution as its least precise tier and never promotes it), which
+  // is exactly why it has to be COUNTED: rename every anchored symbol and the
+  // gate would otherwise print "模型与代码一致" over a model that names nothing
+  // real. Being advisory means it must not fail the build; it does not mean the
+  // verdict may claim it found nothing.
+  "anchor-symbol",
+]);
 
 /**
  * Advisory findings WORTH mentioning in a clean verdict — deliberately not
@@ -360,6 +379,7 @@ export async function runGate(
       errors,
       newErrors: errors,
       scope,
+      comparedToBase: false,
       advisoryCount,
       baseUnavailableReason:
         "--base needs --repo-root: without it the anchor and INV-1 layers do not run at all, " +
@@ -368,7 +388,16 @@ export async function runGate(
   }
   if (!options.base) {
     return errors.length === 0
-      ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope, advisoryCount }
+      ? {
+          verdict: "clean",
+          exitCode: 0,
+          check,
+          errors,
+          newErrors: [],
+          scope,
+          advisoryCount,
+          comparedToBase: false,
+        }
       : {
           verdict: "new-errors",
           exitCode: 1,
@@ -376,6 +405,7 @@ export async function runGate(
           errors,
           newErrors: errors,
           scope,
+          comparedToBase: false,
           advisoryCount,
         };
   }
@@ -403,6 +433,7 @@ export async function runGate(
         errors,
         newErrors: [],
         scope,
+        comparedToBase: false,
         advisoryCount,
         baseUnavailableReason: base.reason,
       };
@@ -414,6 +445,7 @@ export async function runGate(
       errors,
       newErrors: errors,
       scope,
+      comparedToBase: false,
       advisoryCount,
       baseUnavailableReason: base.reason,
     };
@@ -443,10 +475,29 @@ export async function runGate(
       errors: allErrors,
       newErrors,
       scope,
+      comparedToBase: true,
       advisoryCount,
     };
   }
   return errors.length === 0
-    ? { verdict: "clean", exitCode: 0, check, errors, newErrors: [], scope, advisoryCount }
-    : { verdict: "preexisting", exitCode: 0, check, errors, newErrors: [], scope, advisoryCount };
+    ? {
+        verdict: "clean",
+        exitCode: 0,
+        check,
+        errors,
+        newErrors: [],
+        scope,
+        advisoryCount,
+        comparedToBase: true,
+      }
+    : {
+        verdict: "preexisting",
+        exitCode: 0,
+        check,
+        errors,
+        newErrors: [],
+        scope,
+        advisoryCount,
+        comparedToBase: true,
+      };
 }

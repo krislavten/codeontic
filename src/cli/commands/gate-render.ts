@@ -82,6 +82,33 @@ function guidance(violations: Violation[]): string[] {
   return lines;
 }
 
+/**
+ * Everything true about this run that the verdict line alone does not say.
+ *
+ * Written once and appended to EVERY verdict, because the previous shape put
+ * these only under `clean`: a `new-errors` run in model-only scope never
+ * mentioned that anchors and INV-1 had not run at all, and a `preexisting` run
+ * on a PR that deleted an anchored file said only "the baseline is broken".
+ * A caveat that applies to four verdicts and is printed under one is a caveat
+ * that goes unread exactly when it matters.
+ */
+function caveats(result: GateResult): string[] {
+  const out: string[] = [];
+  if (result.scope === "model-only") {
+    out.push("⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，所以这条判定不涉及代码。");
+  } else if (result.advisoryCount > 0) {
+    out.push(
+      `⚠ 另有 **${result.advisoryCount} 处模型指向的代码找不到**（文件不在，或符号已改名）——锚点这一层默认是 advisory，没参与判定。要它参与判红，加 \`--strict-anchors\`。`,
+    );
+  }
+  if (result.baseUnavailableReason && result.verdict !== "unverifiable-base") {
+    out.push(
+      `⚠ 基线没能打分（${result.baseUnavailableReason}），所以「本次有没有新增债务」没查——那一项要两侧对比才算得出来。`,
+    );
+  }
+  return out;
+}
+
 /** Human-readable verdict for a terminal. */
 export function renderGateText(result: GateResult): string {
   const lines: string[] = [];
@@ -95,23 +122,11 @@ export function renderGateText(result: GateResult): string {
       // neither, it is just harder to notice.
       lines.push(
         result.scope === "model-only"
-          ? "gate: passed — no MODEL errors. (Model-only run: anchor existence and INV-1 did not run, " +
-              "so this is not a statement about the code.)"
+          ? "gate: passed — no MODEL errors."
           : result.advisoryCount > 0
-            ? `gate: passed — no blocking errors, but the model points at ${result.advisoryCount} file(s) that do not exist (anchor existence is advisory unless --strict-anchors).`
+            ? "gate: passed — no blocking errors."
             : "gate: passed — no model errors.",
       );
-      if (result.scope !== "model-only" && result.advisoryCount > 0) {
-        lines.push(
-          "锚点存在性默认是 advisory —— 发现了但不影响判定。要它参与判红，加 --strict-anchors。",
-        );
-      }
-      if (result.baseUnavailableReason) {
-        lines.push(
-          `另外：基线没能打分（${result.baseUnavailableReason}），`,
-          "所以「本次有没有新增债务」这一项没查——它需要两侧对比才算得出来。",
-        );
-      }
       break;
     case "preexisting":
       lines.push(
@@ -132,12 +147,15 @@ export function renderGateText(result: GateResult): string {
       break;
     case "new-errors":
       lines.push(
-        `gate: FAILED — ${result.newErrors.length} error(s) introduced by this change.`,
+        result.comparedToBase
+          ? `gate: FAILED — ${result.newErrors.length} error(s) introduced by this change.`
+          : `gate: FAILED — ${result.newErrors.length} error(s). No --base was given, so these are ALL errors at HEAD, not necessarily ones this change introduced.`,
         ...bullets(result.newErrors),
         ...guidance(result.newErrors),
       );
       break;
   }
+  lines.push(...caveats(result));
   return lines.join("\n");
 }
 
@@ -147,20 +165,10 @@ export function renderGateMarkdown(result: GateResult): string {
   switch (result.verdict) {
     case "clean":
       out.push(
-        result.scope === "model-only"
-          ? "✅ **模型自身**没有 error。⚠ 本次是 model-only 运行：**锚点存在性与 INV-1 没跑**，" +
-              "所以这条绿不构成「模型与代码一致」的判断。"
-          : result.advisoryCount > 0
-            ? `✅ 没有阻断级 error，放行。⚠ 但**模型指向的 ${result.advisoryCount} 个文件不存在**——锚点存在性默认是 advisory，所以没判红。**这条绿不等于「模型与代码一致」**；要它参与判红，加 \`--strict-anchors\`。`
-            : "✅ 模型与代码一致，没有 error。",
+        result.scope === "model-only" || result.advisoryCount > 0
+          ? "✅ 没有阻断级 error，放行。**但这条绿不等于「模型与代码一致」**，原因见下。"
+          : "✅ 模型与代码一致，没有 error。",
       );
-      if (result.baseUnavailableReason) {
-        out.push(
-          "",
-          `⚠ 另外：**基线没能打分**（${result.baseUnavailableReason}），`,
-          "所以「本次有没有新增债务」没查——那一项要两侧对比才算得出来。",
-        );
-      }
       break;
     case "preexisting":
       out.push(
@@ -182,7 +190,9 @@ export function renderGateMarkdown(result: GateResult): string {
       break;
     case "new-errors":
       out.push(
-        `❌ **判红**：本次改动引入了 ${result.newErrors.length} 条 error。`,
+        result.comparedToBase
+          ? `❌ **判红**：本次改动引入了 ${result.newErrors.length} 条 error。`
+          : `❌ **判红**：${result.newErrors.length} 条 error。**本次没有给 \`--base\`，所以这是 HEAD 上的全部 error，不一定是这次改动引入的。**`,
         "",
         ...bullets(result.newErrors),
         "",
@@ -194,6 +204,8 @@ export function renderGateMarkdown(result: GateResult): string {
       }
       break;
   }
+  const notes = caveats(result);
+  if (notes.length > 0) out.push("", ...notes.map((n) => `> ${n}`));
   return `${out.join("\n")}\n`;
 }
 

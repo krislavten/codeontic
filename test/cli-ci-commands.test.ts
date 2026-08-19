@@ -243,6 +243,19 @@ describe("gate — argv-level", () => {
     expect(code).toBe(1);
     expect(out.join("\n")).toContain("introduced by this change");
   });
+
+  it("without --base the verdict does NOT claim the change introduced anything", async () => {
+    // `new-errors` names a comparison result. With no base there was no
+    // comparison: every error at HEAD is reported, old ones included, and
+    // "introduced by this change" would point the author at code they never
+    // touched.
+    await breakAnchor();
+    const code = await run(["gate", repo, "--repo-root", repo, "--strict-anchors"], io);
+    expect(code).toBe(1);
+    const text = out.join("\n");
+    expect(text).not.toContain("introduced by this change");
+    expect(text).toContain("No --base");
+  });
 });
 
 describe("gate vs check — no check may be lost in the move", () => {
