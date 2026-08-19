@@ -23,6 +23,8 @@ import { runBacktest } from "./commands/backtest.js";
 import { runCheck } from "./commands/check.js";
 import { runConformance } from "./commands/conformance.js";
 import { runCoverage } from "./commands/coverage.js";
+import { renderGateMarkdown, renderGateText, writeGithubSummary } from "./commands/gate-render.js";
+import { runGate } from "./commands/gate.js";
 import { runGraph } from "./commands/graph.js";
 import { runHookPostEdit, runHookSessionStart } from "./commands/hook.js";
 import { INIT_NEXT_STEPS, runInit } from "./commands/init.js";
@@ -76,6 +78,7 @@ const USAGE =
   "       codeontic inspect <node-id> [dir] [--depth n]\n" +
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
+  "       codeontic gate [dir] [--repo-root path] [--base ref] [--strict-anchors] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base scores the base ref without checking it out); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
   "       codeontic coverage [dir]   # model-side coverage: how much of the model is anchored\n" +
@@ -563,6 +566,46 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       io.log(result.summary);
       io.log(`wrote ${result.outputPath}`);
       return 0;
+    }
+    case "gate": {
+      // The CI entry point. Everything a workflow used to hand-roll around
+      // `check` — base comparison, cause attribution, the step summary, the
+      // exit code — is a return value here; see commands/gate.ts on why.
+      const gateTargetDir = positionals[0] ?? process.cwd();
+      const gateRepoRoot = readStringFlag(flags, "repo-root");
+      const gateBase = readStringFlag(flags, "base");
+      const gateFormat = readStringFlag(flags, "format");
+      for (const f of [gateRepoRoot, gateBase, gateFormat]) {
+        if (f.error) {
+          io.error(`${f.error}. ${USAGE}`);
+          return 1;
+        }
+      }
+      if (gateFormat.value !== undefined && gateFormat.value !== "github") {
+        io.error(`--format must be "github" (got "${gateFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      let gate: Awaited<ReturnType<typeof runGate>>;
+      try {
+        gate = await runGate(gateTargetDir, {
+          repoRoot: gateRepoRoot.value === undefined ? undefined : resolvePath(gateRepoRoot.value),
+          ...(flags["strict-anchors"] === true ? { strictAnchorExistence: true } : {}),
+          ...(gateBase.value === undefined ? {} : { base: gateBase.value }),
+        });
+      } catch (err) {
+        io.error(err instanceof Error ? err.message : String(err));
+        return 1;
+      }
+      io.log(renderGateText(gate));
+      if (gateFormat.value === "github") {
+        const markdown = renderGateMarkdown(gate);
+        if (!(await writeGithubSummary(markdown))) {
+          // No $GITHUB_STEP_SUMMARY (running locally): print the markdown rather
+          // than silently producing nothing — the caller asked for it.
+          io.log(markdown);
+        }
+      }
+      return gate.exitCode;
     }
     case "search": {
       // positionals[0] is the required query string, positionals[1] the target

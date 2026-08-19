@@ -1,0 +1,126 @@
+import { appendFile } from "node:fs/promises";
+import type { Violation } from "../../validate/types.js";
+import type { GateResult } from "./gate.js";
+
+/**
+ * Turning a gate verdict into words. This lives in the engine because the
+ * attribution is engine knowledge: which check names exist, which of them mean
+ * "the model points at something that is gone" versus "the model contradicts
+ * itself", and — the one a consumer cannot get right by scraping — that a
+ * non-zero run with no findings at all is a PIPELINE failure, not a model one.
+ * A workflow that greps stdout has to hardcode a list of causes, and that list
+ * is wrong the moment the engine grows a check.
+ */
+
+/** Check names that mean "the model points at code that isn't there (anymore)". */
+const DRIFT_CHECKS = new Set(["anchor-existence", "anchor-format"]);
+
+function bullets(violations: Violation[]): string[] {
+  return violations.map((v) => {
+    const where = v.nodeId ? `\`${v.nodeId}\`` : v.file ? `\`${v.file}\`` : "";
+    return `- **${v.check}** ${where} — ${v.message}`;
+  });
+}
+
+function guidance(violations: Violation[]): string[] {
+  const names = new Set(violations.map((v) => v.check));
+  const lines: string[] = [];
+  if ([...names].some((n) => DRIFT_CHECKS.has(n))) {
+    lines.push(
+      "模型指向的文件不存在，或锚点写法不合规 —— 同 PR 更新对应节点的 `anchors` / `verified_by`，" +
+        "指向文件搬迁后的真实位置。",
+    );
+  }
+  if ([...names].some((n) => !DRIFT_CHECKS.has(n))) {
+    lines.push(
+      "模型自身不自洽（字段不合法 / id 撞车 / 引用了不存在的节点 / 成环 / shape 与字段矛盾）" +
+        " —— 按上面每条的 message 修模型。",
+    );
+  }
+  return lines;
+}
+
+/** Human-readable verdict for a terminal. */
+export function renderGateText(result: GateResult): string {
+  const lines: string[] = [];
+  switch (result.verdict) {
+    case "clean":
+      lines.push("gate: passed — no model errors.");
+      break;
+    case "preexisting":
+      lines.push(
+        `gate: passed — ${result.errors.length} error(s), all of them already present at the base ref.`,
+        "这不是本次改动引入的，所以不挡你；但基线上的模型与代码已经对不上，仍需有人修。",
+        ...bullets(result.errors),
+      );
+      break;
+    case "unverifiable-base":
+      lines.push(
+        `gate: FAILED — ${result.errors.length} error(s), and the base could not be scored ` +
+          `(${result.baseUnavailableReason}).`,
+        "拿不到基线就无法判断是否本次引入 —— 按判红处理，宁可多挡一次。",
+        ...bullets(result.errors),
+      );
+      break;
+    case "new-errors":
+      lines.push(
+        `gate: FAILED — ${result.newErrors.length} error(s) introduced by this change.`,
+        ...bullets(result.newErrors),
+        ...guidance(result.newErrors),
+      );
+      break;
+  }
+  return lines.join("\n");
+}
+
+/** GitHub step-summary markdown. */
+export function renderGateMarkdown(result: GateResult): string {
+  const out: string[] = ["## codeontic gate", ""];
+  switch (result.verdict) {
+    case "clean":
+      out.push("✅ 模型与代码一致，没有 error。");
+      break;
+    case "preexisting":
+      out.push(
+        `⚠️ **本次改动放行，但基线上的模型是坏的** —— 下面 ${result.errors.length} 条 error 在 base 上**已经存在**，`,
+        "不是这次引入的，所以不挡你。但它们仍需有人修：在修好之前，模型给出的读数都要打折看。",
+        "",
+        ...bullets(result.errors),
+      );
+      break;
+    case "unverifiable-base":
+      out.push(
+        `❌ **判红**：${result.errors.length} 条 error，且**无法给基线打分**（${result.baseUnavailableReason}）。`,
+        "拿不到基线就无法判断是否本次引入 —— 宁可多挡一次，也不因为读不到 base 就静默放行。",
+        "",
+        ...bullets(result.errors),
+      );
+      break;
+    case "new-errors":
+      out.push(
+        `❌ **判红**：本次改动引入了 ${result.newErrors.length} 条 error。`,
+        "",
+        ...bullets(result.newErrors),
+        "",
+        ...guidance(result.newErrors).map((g) => `> ${g}`),
+      );
+      if (result.errors.length > result.newErrors.length) {
+        const old = result.errors.length - result.newErrors.length;
+        out.push("", `> （另有 ${old} 条 error 在 base 上已存在，未计入本次判定。）`);
+      }
+      break;
+  }
+  return `${out.join("\n")}\n`;
+}
+
+/**
+ * Writes the markdown to `$GITHUB_STEP_SUMMARY` when that is set, and always
+ * returns it so a caller can print it too. Appending (not truncating) is what
+ * the file is for — several steps write to the same summary.
+ */
+export async function writeGithubSummary(markdown: string): Promise<boolean> {
+  const target = process.env.GITHUB_STEP_SUMMARY;
+  if (!target) return false;
+  await appendFile(target, markdown, "utf8");
+  return true;
+}

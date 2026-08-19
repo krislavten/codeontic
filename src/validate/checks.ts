@@ -414,7 +414,7 @@ export function checkFlowScenarioIgnored(graph: ModelGraph): Violation[] {
 export async function checkAnchorExistence(
   graph: ModelGraph,
   repoRoot: string,
-  options: { strict?: boolean | undefined } = {},
+  options: { strict?: boolean | undefined; fileSet?: ReadonlySet<string> | undefined } = {},
 ): Promise<Violation[]> {
   const violations: Violation[] = [];
   const severity = options.strict ? "error" : "warning";
@@ -424,6 +424,7 @@ export async function checkAnchorExistence(
   // still resolve — Proposal 016 T6/D1.
   const presence = await resolveAnchorPresence(repoRoot, {
     anchors: anchors.map((a) => a.anchor),
+    fileSet: options.fileSet,
   });
 
   for (const { nodeId, anchor } of anchors) {
@@ -479,7 +480,7 @@ export async function checkAnchorExistence(
 export async function checkVerifiedByText(
   graph: ModelGraph,
   repoRoot: string,
-  options: { strict?: boolean | undefined } = {},
+  options: { strict?: boolean | undefined; fileSet?: ReadonlySet<string> | undefined } = {},
 ): Promise<Violation[]> {
   const scenarios = [...graph.byKind.scenario.values()].filter(
     (s) => s.verified_by_text.length > 0,
@@ -487,6 +488,7 @@ export async function checkVerifiedByText(
   if (scenarios.length === 0) return [];
 
   const presence = await resolveAnchorPresence(repoRoot, {
+    fileSet: options.fileSet,
     anchors: [],
     textAnchors: scenarios.flatMap((s) => s.verified_by_text),
   });
