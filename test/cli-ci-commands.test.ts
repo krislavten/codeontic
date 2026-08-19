@@ -150,6 +150,31 @@ describe("gate — argv-level", () => {
     expect(text).toContain("anchor-existence");
   });
 
+  it("--model-only --base does a narrow comparison instead of failing outright", async () => {
+    // This combination used to be accepted by the CLI and then rejected inside
+    // the gate, so it ALWAYS exited 1 — even on a model with zero errors, with
+    // a message that never mentioned --model-only. The two things it can answer
+    // (did this change introduce a model error, did the debt grow) need no repo
+    // scan at all.
+    await git("tag", "basepoint");
+    const code = await run(["gate", repo, "--model-only", "--base", "basepoint"], io);
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("model-only");
+    expect(text).not.toContain("unverifiable");
+  });
+
+  it("--model-only --base still catches a model error this change introduced", async () => {
+    await git("tag", "basepoint");
+    await writeFile(
+      join(repo, ".codeontic", "model", "loops", "dup.yaml"),
+      '- id: L90\n  kind: loop\n  title: 重复 id\n  boundary: "a → b"\n  owner: null\n  dormant: true\n',
+    );
+    const code = await run(["gate", repo, "--model-only", "--base", "basepoint"], io);
+    expect(code).toBe(1);
+    expect(out.join("\n")).toContain("introduced by this change");
+  });
+
   it("an error already on the trunk exits 0 through the real command line", async () => {
     await breakAnchor();
     await git("add", "-A");
@@ -780,7 +805,7 @@ describe("gate vs check — no check may be lost in the move", () => {
       const result = await runCheck(nogit, { repoRoot: nogit });
       // The scan could not start here, so this must NOT read as "ran".
       expect(result.inv1?.ran).toBe(false);
-      expect(result.coverage.inv1).toBe("configured-but-broken");
+      expect(result.coverage.inv1).toBe("scan-unavailable");
     } finally {
       await rm(nogit, { recursive: true, force: true });
     }

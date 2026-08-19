@@ -172,15 +172,32 @@ describe("runGate", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it("--base without --repo-root fails even on a CLEAN model — empty means 'not checked'", async () => {
-    // The dangerous shape: a workflow whose repo-root variable is empty. The
-    // anchor and INV-1 layers never run, the error set is therefore empty, and
-    // a clean-first short-circuit would call that a pass.
+  it("--base without a repoRoot is a NARROWER comparison, and says which layers it skipped", async () => {
+    // This used to be refused outright, to stop an empty result from reading as
+    // a pass. The refusal was too blunt: model errors and debt growth are both
+    // answerable from the model plus the base ref, no repo scan involved. What
+    // actually prevents the silent pass now is elsewhere — the CLI requires
+    // --repo-root unless --model-only asks for the narrow run (covered in
+    // cli-ci-commands.test.ts), and every verdict states its scope.
     const result = await runGate(repo, { strictAnchorExistence: true, base: "HEAD" });
-    expect(result.verdict).toBe("unverifiable-base");
+    expect(result.scope).toBe("model-only");
+    expect(result.verdict).toBe("clean");
+    expect(renderGateMarkdown(result)).toContain("model-only");
+  });
+
+  it("a model error introduced on top of a clean base is caught WITHOUT a repoRoot", async () => {
+    // The capability the blanket refusal was throwing away. (beforeEach already
+    // committed a clean tree, so HEAD IS the clean base — an extra empty commit
+    // would just fail.)
+    await writeFile(
+      join(repo, ".codeontic", "model", "loops", "dup.yaml"),
+      '- id: L90\n  kind: loop\n  title: 重复 id\n  boundary: "a → b"\n  owner: null\n  dormant: true\n',
+    );
+    const result = await runGate(repo, { base: "HEAD" });
+    expect(result.scope).toBe("model-only");
+    expect(result.verdict).toBe("new-errors");
     expect(result.exitCode).toBe(1);
-    expect(result.errors).toHaveLength(0);
-    expect(renderGateMarkdown(result)).toContain("没查");
+    expect(result.newErrors.some((v) => v.check === "id-uniqueness")).toBe(true);
   });
 
   it("a model file with a CJK name is still scorable at base", async () => {
@@ -465,16 +482,5 @@ describe("runGate — regressions from the 0.13 review", () => {
     expect(result.verdict).not.toBe("clean");
     expect(result.exitCode).toBe(1);
     expect(result.errors.some((e) => e.message.includes("INV-1"))).toBe(true);
-  });
-
-  it("--base without --repo-root is refused, not silently dropped", async () => {
-    // A model-only error: anchor checks need a repoRoot, and this case has none.
-    await writeFile(
-      join(repo, ".codeontic", "model", "loops", "dup.yaml"),
-      'id: L90\nkind: loop\ntitle: dup\nboundary: "x"\nowner: y\nanchors: []\n',
-    );
-    const result = await runGate(repo, { strictAnchorExistence: true, base: "HEAD" });
-    expect(result.verdict).toBe("unverifiable-base");
-    expect(result.baseUnavailableReason).toContain("--repo-root");
   });
 });

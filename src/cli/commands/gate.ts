@@ -295,9 +295,15 @@ function regressionsInCoverage(base: CheckCoverage, head: CheckCoverage): Violat
           ? "INV-1 ran at the base ref but not here — `.codeontic/config.json` was removed, " +
             "which switches the canonical-writer check off for this repo from now on. " +
             "Restore it, or say in the PR why this repo no longer needs it."
-          : "`.codeontic/config.json` existed at the base ref (malformed, so INV-1 never actually " +
-            "started) and is gone here. Deleting it is not the fix — it makes the missing check " +
-            "permanent and silent. Repair the config, or say in the PR why this repo drops INV-1.",
+          : base.inv1 === "config-broken"
+            ? "`.codeontic/config.json` existed at the base ref (malformed, so INV-1 never " +
+              "actually started) and is gone here. Deleting it is not the fix — it makes the " +
+              "missing check permanent and silent. Repair the config, or say in the PR why this " +
+              "repo drops INV-1."
+            : "`.codeontic/config.json` existed at the base ref and is gone here. INV-1 had not " +
+              "started there either, but for an ENVIRONMENT reason (its `git grep` pre-filter had " +
+              "no checkout to run in) — the config itself was fine. Restore it and fix the " +
+              "environment, or say in the PR why this repo drops INV-1.",
       identity: "coverage|inv1",
     });
   }
@@ -322,12 +328,17 @@ function regressionsInCoverage(base: CheckCoverage, head: CheckCoverage): Violat
  */
 async function scoreBase(
   targetDir: string,
-  repoRoot: string,
+  repoRoot: string | undefined,
   base: string,
   strict: boolean | undefined,
 ): Promise<BaseScore | { reason: string }> {
-  const gitRoot = await gitRootOf(repoRoot);
-  if (!gitRoot) return { reason: `${repoRoot} is not inside a git checkout` };
+  // The model is what always gets compared, so the checkout is located from the
+  // target dir. `repoRoot` only widens what the base side examines; without it
+  // this still answers "did this change introduce a model error" and "did the
+  // debt grow", which need no repo scan at all.
+  const anchorDir = repoRoot ?? targetDir;
+  const gitRoot = await gitRootOf(anchorDir);
+  if (!gitRoot) return { reason: `${anchorDir} is not inside a git checkout` };
 
   const mergeBase = await mergeBaseOf(gitRoot, base);
   if (!mergeBase) return { reason: `no merge-base between "${base}" and HEAD (unfetched ref?)` };
@@ -344,7 +355,8 @@ async function scoreBase(
       // package. Assuming either equals the worktree root scans a different
       // scope than HEAD did, and every finding on both sides becomes noise.
       const baseTarget = await pathInBaseWorktree(gitRoot, targetDir, baseDir);
-      const baseRepoRoot = await pathInBaseWorktree(gitRoot, repoRoot, baseDir);
+      const baseRepoRoot =
+        repoRoot === undefined ? undefined : await pathInBaseWorktree(gitRoot, repoRoot, baseDir);
       const check = await runCheck(baseTarget, {
         repoRoot: baseRepoRoot,
         strictAnchorExistence: strict,
@@ -353,7 +365,7 @@ async function scoreBase(
         errors: errorsOf(check),
         debtIds: check.debtIds,
         coverage: check.coverage,
-        roots: [baseTarget, baseRepoRoot],
+        roots: [baseTarget, ...(baseRepoRoot ? [baseRepoRoot] : [])],
       };
     } catch (err) {
       return {
@@ -394,21 +406,13 @@ export async function runGate(
   // run at all, so the usual outcome is an EMPTY error set. Judged after the
   // short-circuit, that reads as `clean` / exit 0: a green gate produced by a
   // gate that did not run. Fail here and the pipeline gets fixed.
-  if (options.base && !repoRoot) {
-    return {
-      verdict: "unverifiable-base",
-      exitCode: 1,
-      check,
-      errors,
-      newErrors: errors,
-      scope,
-      comparedToBase: false,
-      advisoryCount,
-      baseUnavailableReason:
-        "--base needs --repo-root: without it the anchor and INV-1 layers do not run at all, " +
-        "so an empty result would mean 'not checked', not 'clean'",
-    };
-  }
+  // `--base` without a repoRoot used to be refused outright. It is a NARROWER
+  // comparison, not an invalid one: model errors and debt growth are both
+  // answerable from the model plus the base ref alone. The danger it was
+  // guarding against — an empty result reading as "clean" when half the gate
+  // never ran — is now carried by `scope` and stated in every verdict, and the
+  // CLI requires `--repo-root` unless `--model-only` says the narrow run is
+  // what the caller wants.
   if (!options.base) {
     return errors.length === 0
       ? {
@@ -437,12 +441,7 @@ export async function runGate(
   // visible in HEAD's error set at all: debt that GREW. That is a comparison
   // between two debt id sets, and a repo whose only fault is a newly registered
   // debt node has an empty HEAD error set.
-  const base = await scoreBase(
-    targetDir,
-    repoRoot as string,
-    options.base,
-    options.strictAnchorExistence,
-  );
+  const base = await scoreBase(targetDir, repoRoot, options.base, options.strictAnchorExistence);
   if ("reason" in base) {
     // A clean HEAD with an unscorable base is not a failure: there is nothing
     // to attribute, so there is nothing the missing baseline could change. It
@@ -478,7 +477,7 @@ export async function runGate(
   // meet on the same text.
   // Resolved here as well as at the CLI: `runGate` is a library entry point,
   // and a relative path reaching redactRoots is the failure above.
-  const headRoots = [targetDir, repoRoot as string];
+  const headRoots = [targetDir, ...(repoRoot ? [repoRoot] : [])];
   const baseKeys = new Set(base.errors.map((v) => violationKey(v, base.roots)));
   const newErrors = errors.filter((v) => !baseKeys.has(violationKey(v, headRoots)));
   // Debt growth is a property of the PAIR, not of either side — it exists only
