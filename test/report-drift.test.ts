@@ -98,6 +98,30 @@ describe("runReport", () => {
   });
 });
 
+describe("drift-report and --strict-adapter", () => {
+  it("defaults to advisory: a missing adapter is stated, exit stays 0", async () => {
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(["drift-report", workDir, "--repo-root", workDir, "--base", "HEAD"], {
+      log: (l) => logs.push(l),
+      error: (l) => logs.push(l),
+    });
+    expect(code).toBe(0);
+  });
+
+  it("--strict-adapter really fails — it used to print 'hard failure' and exit 0", async () => {
+    // The banner even advises passing this flag "to fail CI on this". Swallowing
+    // its halt made that advice permanently false on this one command.
+    await seedSyntheticModel(workDir);
+    const logs: string[] = [];
+    const code = await run(
+      ["drift-report", workDir, "--repo-root", workDir, "--base", "HEAD", "--strict-adapter"],
+      { log: (l) => logs.push(l), error: (l) => logs.push(l) },
+    );
+    expect(code).toBe(1);
+  });
+});
+
 describe("no adapter is 'never ran', not 'found nothing'", () => {
   it("a snapshot without an adapter marks its edge set unavailable, with a cause", async () => {
     await seedSyntheticModel(workDir);

@@ -611,20 +611,25 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         return 1;
       }
       // `gateable: true` so a BROKEN adapter is loud rather than silently
-      // producing an empty edge set (which would read as "no new edges"). Its
-      // halt is converted into a stated non-result instead of an exit code:
-      // this command is documented — in its usage line and its changeset — as
-      // never failing the caller, and a step that sometimes exits 1 anyway is
-      // worse than either contract, because the workflow around it is written
-      // for the promise, not the exception.
+      // producing an empty edge set (which would read as "no new edges").
+      //
+      // Its halt normally becomes a stated non-result rather than an exit code:
+      // this command is documented — usage line and changeset both — as never
+      // failing the caller. `--strict-adapter` is the one exception, because it
+      // is the caller SAYING they want the opposite; swallowing it printed
+      // "this is a hard failure because --strict-adapter is set" and then
+      // exited 0, and the banner's advice to "pass --strict-adapter to fail CI
+      // on this" was, on this command, never true.
+      const strictAdapter = flags["strict-adapter"] === true;
       const driftReportAdapter = await gateAdapter(flags, driftRepoRoot.value, io, true);
       // Same reasoning as `report` above: an advisory step that throws turns a
       // reading into a red build. A failure becomes a stated non-result.
       let driftResult: Awaited<ReturnType<typeof runDriftReport>>;
       if ("halt" in driftReportAdapter) {
+        if (strictAdapter) return driftReportAdapter.halt;
         driftResult = {
           ran: false,
-          reason: "适配器没能加载（上面已打印原因）——没有事实提取器就没有边可比",
+          reason: "适配器不可用（缺失或加载失败，原因见上）——没有事实提取器就没有边可比",
         };
       } else {
         try {
