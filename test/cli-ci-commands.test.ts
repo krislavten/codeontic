@@ -175,6 +175,24 @@ describe("gate — argv-level", () => {
     expect(out.join("\n")).toContain("introduced by this change");
   });
 
+  it("--model-only catches a MODEL-only inconsistency it used to miss", async () => {
+    // The crux referential check needed no checkout, but sat behind repoRoot —
+    // so `--model-only` printed "no MODEL errors" while `--repo-root .` on the
+    // same tree exited 1. Two answers about the model from one model.
+    const path = join(repo, ".codeontic", "model", "loops", "main.yaml");
+    const original = await readFile(path, "utf8");
+    await writeFile(
+      path,
+      original.replace(
+        'anchors: ["src/synth/main.ts#SynthLoop"]',
+        'anchors: ["src/synth/main.ts#SynthLoop"]\n  crux:\n    - anchor: "src/synth/undeclared.ts#Nope"\n      text: "x"',
+      ),
+    );
+    const modelOnly = await run(["gate", repo, "--model-only"], io);
+    expect(modelOnly).toBe(1);
+    expect(out.join("\n")).toContain("not in L90.anchors");
+  });
+
   it("an error already on the trunk exits 0 through the real command line", async () => {
     await breakAnchor();
     await git("add", "-A");

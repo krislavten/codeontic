@@ -12,7 +12,7 @@ import {
   checkVerifiedByText,
 } from "./checks.js";
 import { checkAnchorDuplicate, checkFreetextIdRef } from "./consistency.js";
-import { checkAnchorCrux } from "./crux.js";
+import { checkAnchorCrux, checkCruxReferences } from "./crux.js";
 import { summarize } from "./types.js";
 import type { T0Result, Violation } from "./types.js";
 
@@ -57,6 +57,8 @@ export async function runT0(load: LoadResult, options: T0Options = {}): Promise<
     // warning and what each deliberately does not look at.
     ...checkAnchorDuplicate(load.graph),
     ...checkFreetextIdRef(load.graph),
+    // Model-only, so it runs with or without a checkout — see crux.ts.
+    ...checkCruxReferences(load.graph),
   ];
 
   if (options.repoRoot) {

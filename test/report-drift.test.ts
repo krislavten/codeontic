@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,7 +44,10 @@ describe("runReport", () => {
     expect(md).toContain("codeontic 报告档");
     // The specific trap: coverage's scenario✓ does not mean a test backs it.
     expect(md).toContain("verified_by");
-    expect(md).toContain("不影响合并");
+    // The readings do not gate merges; the wording no longer says a flat
+    // "不影响合并", because --strict-adapter can make this step exit 1.
+    expect(md).toContain("不参与合并判定");
+    expect(md).toContain("--strict-adapter");
   });
 
   it("a skipped section marks the report degraded — blank is not 'passed'", async () => {
@@ -107,6 +110,37 @@ describe("report and --strict-adapter", () => {
       error: (l) => logs.push(l),
     });
     expect(code).toBe(0);
+  });
+
+  it("--strict-adapter does not turn unrelated section failures into exit 1", async () => {
+    // The first version derived "strict halt" from any section's exit code, so
+    // a malformed model YAML (conformance throwing) flipped the exit code only
+    // when this flag was present — a flag about adapters changing the outcome
+    // of a run with no adapter problem.
+    await seedSyntheticModel(workDir);
+    // A real (minimal) adapter, so the adapter gate is satisfied either way and
+    // the only problem left is the model.
+    const adapterPath = join(workDir, "tiny-adapter.mjs");
+    await writeFile(
+      adapterPath,
+      "export default {\n" +
+        '  interfaceVersion: "v2",\n' +
+        '  name: "tiny",\n' +
+        '  version: "1",\n' +
+        '  candidatePattern: "nothing-matches-this",\n' +
+        "  extractFacts: () => [],\n" +
+        "};\n",
+    );
+    await writeFile(join(workDir, ".codeontic", "model", "loops", "bad.yaml"), "id: [oops\n");
+    const logs: string[] = [];
+    const args = ["report", workDir, "--repo-root", workDir, "--adapter-path", adapterPath];
+    const withoutFlag = await run(args, { log: (l) => logs.push(l), error: (l) => logs.push(l) });
+    const withFlag = await run([...args, "--strict-adapter"], {
+      log: (l) => logs.push(l),
+      error: (l) => logs.push(l),
+    });
+    // Whatever the answer is, an adapter flag must not be what decides it.
+    expect(withFlag).toBe(withoutFlag);
   });
 
   it("--strict-adapter really fails — the same defect its sibling command just fixed", async () => {

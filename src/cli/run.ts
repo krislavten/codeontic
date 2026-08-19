@@ -85,8 +85,8 @@ const USAGE =
   "       codeontic inspect <node-id> [dir] [--depth n]\n" +
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
-  "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; never fails\n" +
-  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; never fails\n" +
+  "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; the reading never fails the build (only --strict-adapter or a broken --adapter-path can)\n" +
+  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; the readings never fail the build (only --strict-adapter can)\n" +
   "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base checks out the base ref in a temp worktree and runs the identical check there, so already-broken vs newly-broken is a set difference); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
@@ -670,7 +670,8 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         const markdown = renderDriftMarkdown(driftResult);
         if (!(await appendGithubSummary(markdown))) io.log(markdown);
       }
-      // Advisory: a reading about architecture never fails the caller. When the
+      // Advisory: the READING never fails the caller (the adapter gate above is
+      // the one exception, and it is either a breakage or an opt-in). When the
       // comparison could not run, the summary says so in words — that state is
       // reported, not swallowed, and not turned into a red build either.
       return 0;
@@ -697,6 +698,23 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // exit: an unparseable model made `report` die with zero output, which is
       // the one thing an advisory step must never do — the reader cannot tell
       // "nothing to report" from "this never ran".
+      // Same shape as drift-report: resolve the adapter HERE, so "the adapter
+      // is broken / the caller demanded one" is decided in one place, on the
+      // adapter's own status. Deriving it from the sections' exit codes (the
+      // first attempt) counted any failure — a malformed model YAML making
+      // conformance throw — as an adapter problem, so `--strict-adapter`
+      // changed the exit code of runs that had no adapter issue at all.
+      const reportAdapterStatus = await gateAdapter(
+        flags,
+        reportRepoRoot.value ?? reportTargetDir,
+        io,
+        true,
+      );
+      if ("halt" in reportAdapterStatus) {
+        if (reportAdapterStatus.cause === "broken" || flags["strict-adapter"] === true) {
+          return reportAdapterStatus.halt;
+        }
+      }
       let report: Awaited<ReturnType<typeof runReport>>;
       try {
         report = await runReport(
@@ -705,7 +723,6 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
             ...(reportRepoRoot.value === undefined ? {} : { repoRoot: reportRepoRoot.value }),
             ...(reportAdapter.value === undefined ? {} : { adapterPath: reportAdapter.value }),
             ...(flags["no-cache"] === true ? { noCache: true } : {}),
-            ...(flags["strict-adapter"] === true ? { strictAdapter: true } : {}),
           },
           (args, captureIo) => run(args, captureIo),
         );
@@ -720,11 +737,10 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         const markdown = renderReportMarkdown(report);
         if (!(await appendGithubSummary(markdown))) io.log(markdown);
       }
-      // Advisory by construction: a reading never fails the caller — unless the
-      // caller said otherwise. `--strict-adapter` is exactly that, and honouring
-      // it here is what makes the banner's own advice ("pass --strict-adapter to
-      // fail CI on this") true on this command too.
-      return report.strictHalt ? 1 : 0;
+      // Advisory by construction: the readings themselves never fail the
+      // caller. The one way this command exits non-zero is the adapter gate
+      // above, which is either a real breakage or an explicit opt-in.
+      return 0;
     }
     case "gate": {
       // The CI entry point. Everything a workflow used to hand-roll around
