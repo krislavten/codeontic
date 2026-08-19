@@ -135,9 +135,17 @@ function caveats(result: GateResult): string[] {
       `⚠ 另有 **${result.advisoryCount} 处模型指向的东西找不到**（文件不在、符号已改名，或引用的测试标题/文本已改）——锚点这一层默认是 advisory，没参与判定。文件缺失可以用 \`--strict-anchors\` 提成判红；符号与文本这两类按设计永远只报不挡。`,
     );
   }
-  if (result.baseUnavailableReason && result.verdict !== "unverifiable-base") {
+  // Triggered by "no comparison happened", not by "the comparison failed".
+  // Those are two ways into the same blind spot, and only one of them was
+  // covered: a plain `gate --repo-root .` skips debt growth and the
+  // coverage-regression detector just as completely as a broken base ref does,
+  // and said nothing about it — so a PR deleting `.codeontic/config.json`
+  // passed with "模型与代码一致", and INV-1 was off for that repo from then on.
+  if (!result.comparedToBase && result.verdict !== "unverifiable-base") {
     out.push(
-      `⚠ 基线没能打分（${result.baseUnavailableReason}）。**所有需要两侧对比的判定本次都没跑**：有没有新增债务，以及这次改动有没有把某一层检查整个关掉（删掉 \`.codeontic/config.json\` 或清空模型目录）。这两项都不是「没问题」，是没查。`,
+      result.baseUnavailableReason
+        ? `⚠ 基线没能打分（${result.baseUnavailableReason}）。**所有需要两侧对比的判定本次都没跑**：有没有新增债务，以及这次改动有没有把某一层检查整个关掉。这两项都不是「没问题」，是没查。`
+        : "⚠ 本次没有给 `--base`，**所有需要两侧对比的判定都没跑**：有没有新增债务，以及这次改动有没有把某一层检查整个关掉（例如删掉 `.codeontic/config.json`）。这两项都不是「没问题」，是没查。",
     );
   }
   return out;

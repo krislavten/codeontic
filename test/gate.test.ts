@@ -354,6 +354,28 @@ describe("one check name, two different findings", () => {
   });
 });
 
+describe("no --base at all disables the same two judgements", () => {
+  it("a CLEAN verdict without --base still says the pair-dependent checks did not run", async () => {
+    // The blind spot this closes: `gate . --repo-root .` (usage marks --base
+    // optional) on a PR that deletes `.codeontic/config.json` produced
+    // "✅ 模型与代码一致，没有 error." — no INV-1 violations because INV-1 was
+    // gone, no coverage-regression because that needs two sides, exit 0, and
+    // the check silently off for every future PR.
+    const result = await runGate(repo, { repoRoot: repo });
+    expect(result.verdict).toBe("clean");
+    expect(result.comparedToBase).toBe(false);
+    const text = renderGateText(result) + renderGateMarkdown(result);
+    expect(text).toContain("没有给 `--base`");
+    expect(text).toContain("整个关掉");
+  });
+
+  it("with --base, that caveat is absent — the comparison really happened", async () => {
+    const result = await runGate(repo, { repoRoot: repo, base: "HEAD" });
+    expect(result.comparedToBase).toBe(true);
+    expect(renderGateText(result)).not.toContain("没有给 `--base`");
+  });
+});
+
 describe("an unscorable base disables MORE than the debt check", () => {
   it("names every pair-dependent judgement, not just debt growth", async () => {
     // A shallow clone (no merge-base) plus a PR that deletes
