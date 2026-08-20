@@ -767,10 +767,26 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
           (args, captureIo) => run(args, captureIo),
         );
       } catch (err) {
-        io.error(
-          `⚠ report 未能产出：${err instanceof Error ? err.message : String(err)} —— 这是管线故障，不是「没查出问题」。`,
-        );
-        return 0;
+        // Folded into a DEGRADED result, not returned early. An early return
+        // printed one line and skipped both the annotation and the summary —
+        // so the one state this command exists to make visible ("it did not
+        // run") was, on this exact branch, invisible again: green step, empty
+        // summary, no mark on the PR. drift-report folds its own throw the same
+        // way; a failure has to travel the normal rendering path or it does not
+        // travel at all.
+        report = {
+          sections: [
+            {
+              title: "报告未能产出",
+              lines: [
+                `这一步抛错：${err instanceof Error ? err.message : String(err)}`,
+                "空白不代表对账通过——它代表这次没查。",
+              ],
+              exitCode: 1,
+            },
+          ],
+          degraded: true,
+        };
       }
       io.log(renderReportText(report));
       if (reportFormat.value === "github") {
