@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Adapter } from "../../adapters/types.js";
 import { mergeBaseOf, withBaseWorktree } from "../../query/base-worktree.js";
 import { gitRootOf } from "../../query/diff.js";
+import { errorAnnotation } from "../gh-annotation.js";
 import { type Snapshot, type SnapshotDrift, diffSnapshots, runSnapshot } from "./snapshot.js";
 
 /**
@@ -208,6 +209,27 @@ export function renderDriftMarkdown(result: DriftReportResult): string {
     );
   }
   return `${out.join("\n")}\n`;
+}
+
+/**
+ * The PR-visible form of "this comparison did not happen" (see
+ * cli/gh-annotation.ts).
+ *
+ * Covers exactly the two states the markdown marks with ⚠ — the comparison
+ * never ran, or a side's edge set is UNAVAILABLE with a cause. It deliberately
+ * does NOT cover `topologyEmpty`: an empty edge set is a scan that ran and found
+ * nothing, which is a legitimate result (the markdown marks it ℹ). Annotating it
+ * would put a red mark on every repo whose extractor legitimately finds no
+ * cross-service calls, and an annotation that fires on the normal case gets
+ * muted like any other.
+ */
+export function driftAnnotation(result: DriftReportResult): string | undefined {
+  const reason = result.ran ? result.edgesUnavailableReason : (result.reason ?? "未知原因");
+  if (!reason) return undefined;
+  return errorAnnotation(
+    "codeontic 边比较不可用",
+    `${reason} —— 服务间调用边本次没有被检查，这是管线故障，不是「没查出问题」。`,
+  );
 }
 
 export function renderDriftText(result: DriftReportResult): string {
