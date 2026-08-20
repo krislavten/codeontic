@@ -1024,8 +1024,27 @@ describe("--format github — the ::error annotation", () => {
     const stdout = out.join("\n");
     expect(stdout).toContain("::error title=");
     expect(stdout).toContain("codeontic 边比较不可用");
+    // Names the branch, not just the title: `driftAnnotation` reads its reason
+    // from two different fields (`reason` when the run never happened,
+    // `edgesUnavailableReason` when a side's edges came back unavailable) and
+    // both render under this same title. Asserting the title alone would pass
+    // while only one of them was ever exercised.
+    expect(stdout).toContain("适配器不可用");
     expect(await summary()).toContain("服务间调用边");
     expect(await summary()).not.toContain("::error");
+  });
+
+  it("drift-report annotates when a side's edge set came back UNAVAILABLE", async () => {
+    // The other reason field. Reaching it end-to-end needs an adapter whose
+    // fact scan fails mid-run, so it is exercised directly — the point is that
+    // `ran: true` is not by itself proof the edges were compared.
+    const note = driftAnnotation({
+      ran: true,
+      drift: NO_DRIFT,
+      edgesUnavailableReason: "基线侧的边不可用：facts 扫描失败",
+    });
+    expect(note).toContain("codeontic 边比较不可用");
+    expect(note).toContain("facts 扫描失败");
   });
 
   it("drift-report emits no annotation without --format github", async () => {
