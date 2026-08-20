@@ -186,20 +186,29 @@ export const DRIFT_CHECKS: ReadonlySet<string> = new Set([
  * file passes, and "模型与代码一致" is then the one clean-verdict sentence that
  * is actually false.
  */
-function advisoriesOf(check: CheckResult): Violation[] {
-  return [...check.t0.violations, ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : [])].filter(
-    (v) => v.severity === "warning" && DRIFT_CHECKS.has(v.check),
-  );
-}
-
-function errorsOf(check: CheckResult): Violation[] {
+/**
+ * Everything a check run has to say, in one list.
+ *
+ * Built once and filtered twice (errors, advisories) rather than assembled
+ * separately by each: `inv1ViolationsFrom` walks every write point the scan
+ * produced, and both callers were paying for that walk.
+ */
+function allFindings(check: CheckResult): Violation[] {
   const all: Violation[] = [
     ...check.t0.violations,
     ...(check.inv1 ? inv1ViolationsFrom(check.inv1) : []),
   ];
   if (check.inv1ConfigError) all.push(configViolation(check.inv1ConfigError));
   if (check.inv1 && !check.inv1.ran) all.push(scanSkippedViolation(check.inv1.skippedReason));
-  return all.filter((v) => v.severity === "error");
+  return all;
+}
+
+function advisoriesOf(findings: readonly Violation[]): Violation[] {
+  return findings.filter((v) => v.severity === "warning" && DRIFT_CHECKS.has(v.check));
+}
+
+function errorsOf(findings: readonly Violation[]): Violation[] {
+  return findings.filter((v) => v.severity === "error");
 }
 
 /**
@@ -362,7 +371,7 @@ async function scoreBase(
         strictAnchorExistence: strict,
       });
       return {
-        errors: errorsOf(check),
+        errors: errorsOf(allFindings(check)),
         debtIds: check.debtIds,
         coverage: check.coverage,
         roots: [baseTarget, ...(baseRepoRoot ? [baseRepoRoot] : [])],
@@ -396,8 +405,9 @@ export async function runGate(
     repoRoot,
     strictAnchorExistence: options.strictAnchorExistence,
   });
-  const errors = errorsOf(check);
-  const advisoryCount = advisoriesOf(check).length;
+  const findings = allFindings(check);
+  const errors = errorsOf(findings);
+  const advisoryCount = advisoriesOf(findings).length;
   const scope = repoRoot ? ("full" as const) : ("model-only" as const);
 
   // BEFORE the clean short-circuit, deliberately. `--base` without `--repo-root`

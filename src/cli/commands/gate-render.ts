@@ -1,4 +1,3 @@
-import { appendFile } from "node:fs/promises";
 import type { Violation } from "../../validate/types.js";
 import { CONFIG_CHECK, COVERAGE_CHECK, DRIFT_CHECKS, type GateResult, SCAN_CHECK } from "./gate.js";
 
@@ -249,26 +248,4 @@ export function renderGateMarkdown(result: GateResult): string {
   const notes = caveats(result);
   if (notes.length > 0) out.push("", ...notes.map((n) => `> ${n}`));
   return `${out.join("\n")}\n`;
-}
-
-/**
- * Writes the markdown to `$GITHUB_STEP_SUMMARY` when that is set. Appending
- * (not truncating) is what the file is for — several steps write to the same
- * summary.
- *
- * Never throws. A summary file that is unset, read-only, or on a full disk is a
- * delivery problem for one rendering, and letting it reject would take down the
- * command around it — including the two that promise never to fail. Callers get
- * `false` and print the markdown to stdout instead, so the content survives
- * either way.
- */
-export async function writeGithubSummary(markdown: string): Promise<boolean> {
-  const target = process.env.GITHUB_STEP_SUMMARY;
-  if (!target) return false;
-  try {
-    await appendFile(target, markdown, "utf8");
-    return true;
-  } catch {
-    return false;
-  }
 }

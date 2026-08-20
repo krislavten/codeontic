@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
  * the checkout is ~0.5s and the second scan ~0.5s.
  */
 
-export interface BaseCheckout {
+interface BaseCheckout {
   /** Worktree root: the base ref's tree, detached. */
   dir: string;
   /** Removes the worktree and its temp parent. Safe to call once. */
@@ -55,10 +55,7 @@ export async function mergeBaseOf(gitRoot: string, ref: string): Promise<string 
  * unfetched ref in a shallow CI clone is the common case) — callers must fail
  * closed rather than read that as "the base was clean".
  */
-export async function addBaseWorktree(
-  gitRoot: string,
-  sha: string,
-): Promise<BaseCheckout | undefined> {
+async function addBaseWorktree(gitRoot: string, sha: string): Promise<BaseCheckout | undefined> {
   const parent = await mkdtemp(join(tmpdir(), "codeontic-base-"));
   const dir = join(parent, "base");
   try {

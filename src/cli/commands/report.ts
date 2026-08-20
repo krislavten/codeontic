@@ -1,4 +1,3 @@
-import { appendFile } from "node:fs/promises";
 import type { CliIO } from "../run.js";
 
 /**
@@ -160,16 +159,4 @@ export function renderReportText(result: ReportResult): string {
     out.push("⚠ 有小节没能完整产出——空白不等于通过；原因见该节内容。");
   }
   return out.join("\n");
-}
-
-/** See `writeGithubSummary` in gate-render.ts — same contract, never throws. */
-export async function appendGithubSummary(markdown: string): Promise<boolean> {
-  const target = process.env.GITHUB_STEP_SUMMARY;
-  if (!target) return false;
-  try {
-    await appendFile(target, markdown, "utf8");
-    return true;
-  } catch {
-    return false;
-  }
 }

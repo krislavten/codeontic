@@ -24,19 +24,14 @@ import { runCheck } from "./commands/check.js";
 import { runConformance } from "./commands/conformance.js";
 import { runCoverage } from "./commands/coverage.js";
 import { renderDriftMarkdown, renderDriftText, runDriftReport } from "./commands/drift-report.js";
-import { renderGateMarkdown, renderGateText, writeGithubSummary } from "./commands/gate-render.js";
+import { renderGateMarkdown, renderGateText } from "./commands/gate-render.js";
 import { runGate } from "./commands/gate.js";
 import { runGraph } from "./commands/graph.js";
 import { runHookPostEdit, runHookSessionStart } from "./commands/hook.js";
 import { INIT_NEXT_STEPS, runInit } from "./commands/init.js";
 import { runInspect } from "./commands/inspect.js";
 import { runOverview } from "./commands/overview.js";
-import {
-  appendGithubSummary,
-  renderReportMarkdown,
-  renderReportText,
-  runReport,
-} from "./commands/report.js";
+import { renderReportMarkdown, renderReportText, runReport } from "./commands/report.js";
 import { runSearchCli } from "./commands/search.js";
 import {
   type SnapshotDrift,
@@ -49,6 +44,7 @@ import {
 } from "./commands/snapshot.js";
 import { runTopology } from "./commands/topology.js";
 import { runView } from "./commands/view.js";
+import { writeStepSummary } from "./step-summary.js";
 
 const MANAGED_MARKER_HINT = `wrap managed content with "${MARKER_START}" / "${MARKER_END}"`;
 
@@ -691,7 +687,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       io.log(renderDriftText(driftResult));
       if (driftFormat.value === "github") {
         const markdown = renderDriftMarkdown(driftResult);
-        if (!(await appendGithubSummary(markdown))) io.log(markdown);
+        if (!(await writeStepSummary(markdown))) io.log(markdown);
       }
       // Advisory: the READING never fails the caller (the adapter gate above is
       // the one exception, and it is either a breakage or an opt-in). When the
@@ -763,7 +759,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       io.log(renderReportText(report));
       if (reportFormat.value === "github") {
         const markdown = renderReportMarkdown(report);
-        if (!(await appendGithubSummary(markdown))) io.log(markdown);
+        if (!(await writeStepSummary(markdown))) io.log(markdown);
       }
       // Advisory by construction: the readings themselves never fail the
       // caller. The one way this command exits non-zero is the adapter gate
@@ -815,7 +811,7 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       io.log(renderGateText(gate));
       if (gateFormat.value === "github") {
         const markdown = renderGateMarkdown(gate);
-        if (!(await writeGithubSummary(markdown))) {
+        if (!(await writeStepSummary(markdown))) {
           // No $GITHUB_STEP_SUMMARY (running locally): print the markdown rather
           // than silently producing nothing — the caller asked for it.
           io.log(markdown);
