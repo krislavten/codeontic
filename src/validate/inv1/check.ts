@@ -114,13 +114,32 @@ export async function runInv1Check(
  */
 export function inv1ViolationsFrom(result: Inv1CheckResult): Violation[] {
   const out: Violation[] = [];
+  // How many identical (reason, file, snippet) triples have been seen so far.
+  // See the identity comment below for why this counter exists.
+  const seen = new Map<string, number>();
   for (const wp of result.writePoints) {
     if (wp.verdict === "allowed") continue;
+    // Identity WITHOUT the line number, PLUS an ordinal.
+    //
+    // Without the line: an edit anywhere above a long-standing violation shifts
+    // it, and a shifted violation is not a new one — blaming a one-line import
+    // for it blocks a PR that introduced nothing.
+    //
+    // With the ordinal: the snippet is normalised source text, so two textually
+    // identical write statements in one file collapse to one key. A base with
+    // one of them and a PR adding a second would then match, `newErrors` would
+    // be empty, and a genuinely new violation would be waved through. The
+    // ordinal is position-INDEPENDENT (it counts occurrences, not lines), so it
+    // keeps the shift-tolerance while restoring the count sensitivity.
+    const base = `${wp.reason}|${wp.filePath}|${wp.snippet}`;
+    const ordinal = seen.get(base) ?? 0;
+    seen.set(base, ordinal + 1);
     out.push({
       check: "inv1-write-site",
       severity: wp.verdict === "violation" ? "error" : "warning",
       message: `${wp.reason} — ${wp.filePath}:${wp.line} (${wp.snippet})`,
       file: wp.filePath,
+      identity: `${base}#${ordinal}`,
     });
   }
   return out;

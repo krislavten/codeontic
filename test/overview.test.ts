@@ -13,7 +13,6 @@ import {
   moduleKeyOf,
   renderOverviewHtml,
   repoLinks,
-  textWidth,
 } from "../src/views/overview-html.js";
 import type { OverviewMeta } from "../src/views/overview-html.js";
 import { seedSyntheticModel } from "./support/seed-synthetic-model.js";

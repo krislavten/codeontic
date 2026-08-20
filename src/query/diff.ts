@@ -5,6 +5,8 @@ import { allNodes } from "../loader/model-graph.js";
 import { testTextAnchorLabel } from "../schema/model.js";
 import { anchorFilePath } from "../validate/anchor.js";
 
+import { mergeBaseOf } from "./base-worktree.js";
+
 const execFileAsync = promisify(execFile);
 
 /**
@@ -24,11 +26,9 @@ export async function changedFiles(
   gitRoot: string,
   baseRef: string,
 ): Promise<string[] | undefined> {
+  const base = await mergeBaseOf(gitRoot, baseRef);
+  if (!base) return undefined; // bad ref / not a git repo / no merge-base
   try {
-    const { stdout: mb } = await execFileAsync("git", ["merge-base", baseRef, "HEAD"], {
-      cwd: gitRoot,
-    });
-    const base = mb.trim();
     // `git diff --name-only <base>` compares base..working-tree (includes
     // uncommitted edits), which is what a pre-push / local check wants.
     const { stdout } = await execFileAsync("git", ["diff", "--name-only", base], {
@@ -121,14 +121,8 @@ export async function debtIdsAtRef(
   modelRelDir: string,
   baseRef: string,
 ): Promise<Set<string> | undefined> {
-  let base: string;
-  try {
-    base = (
-      await execFileAsync("git", ["merge-base", baseRef, "HEAD"], { cwd: gitRoot })
-    ).stdout.trim();
-  } catch {
-    return undefined; // bad ref / not a git repo
-  }
+  const base = await mergeBaseOf(gitRoot, baseRef);
+  if (!base) return undefined; // bad ref / not a git repo
   let stdout: string;
   try {
     // POSIX ERE (git grep -E) — `[[:space:]]`, not `\s` (that's PCRE). A pathspec

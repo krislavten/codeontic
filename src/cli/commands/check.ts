@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { loadModel } from "../../loader/load-model.js";
 import {
@@ -40,6 +41,46 @@ export interface CheckResult {
   diff?: DiffInfo;
   /** baseline-growth violations from `--diff` (new debt ids vs the base ref). */
   baselineViolations?: Violation[];
+  /**
+   * Every debt node id in the model. Debt growth is a property of two trees,
+   * not one, so the caller comparing two runs (`gate --base`) needs the raw set
+   * — otherwise it would have to re-load the model just to count debt.
+   */
+  debtIds: ReadonlySet<string>;
+  /**
+   * WHICH LAYERS ACTUALLY RAN, and how much they had to look at.
+   *
+   * Comparing findings across two trees answers "did this change break
+   * something". It cannot answer "did this change stop us from looking" — and
+   * those two produce the same empty result. Deleting `.codeontic/config.json`
+   * turns INV-1 off for every future PR; emptying the model directory (but
+   * leaving it in place, so the loader does not complain) makes every model
+   * check vacuous. Both yield zero findings, which reads as "clean".
+   *
+   * Reported here so the comparer can see the difference between "no findings"
+   * and "nothing was examined".
+   */
+  coverage: CheckCoverage;
+}
+
+export interface CheckCoverage {
+  /**
+   * The INV-1 layer's state, as three values rather than a boolean.
+   *
+   * A boolean called `inv1Active` was true on the malformed-config path, where
+   * the layer is configured but never starts. The comparison downstream then
+   * told an author "INV-1 ran at the base ref but not here — restore the
+   * config", about a config that had been broken on the trunk all along.
+   *
+   * `config-broken` and `scan-unavailable` are separate for the same reason
+   * again: they were briefly one value, and the message that value produced
+   * ("the config is malformed, repair it") pointed at a perfectly valid file
+   * whenever the real cause was that `git grep` had nowhere to run. Each value
+   * implies a different next action, so each gets its own.
+   */
+  inv1: "ran" | "config-broken" | "scan-unavailable" | "absent";
+  /** How many nodes the model contributed. Zero means the model checks had nothing to check. */
+  nodeCount: number;
 }
 
 /**
@@ -49,6 +90,23 @@ export interface CheckResult {
  * map changed files to affected model nodes, and enforce baseline-only-decreases
  * against the model at the base ref.
  */
+/**
+ * Re-expresses git's top-level-relative paths against `repoRoot`, dropping the
+ * ones that fall outside it (another service's files, in a monorepo where the
+ * scan is scoped to one package). Returns them unchanged when repoRoot IS the
+ * checkout root, which is the common case.
+ */
+async function toRepoRootRelative(paths: string[], repoRoot: string): Promise<string[]> {
+  const gitRoot = await gitRootOf(repoRoot);
+  if (!gitRoot) return paths;
+  const gitRootReal = await realpath(gitRoot).catch(() => gitRoot);
+  const repoRootReal = await realpath(repoRoot).catch(() => repoRoot);
+  const prefix = relative(gitRootReal, repoRootReal).split(/[/\\]/).join("/");
+  if (!prefix || prefix.startsWith("..")) return paths;
+  const head = `${prefix}/`;
+  return paths.filter((p) => p.startsWith(head)).map((p) => p.slice(head.length));
+}
+
 export async function runCheck(
   targetDir: string,
   options: CheckOptions = {},
@@ -62,9 +120,17 @@ export async function runCheck(
   if (options.diffBase) {
     const modelGitRoot = await gitRootOf(targetDir);
     if (modelGitRoot) {
+      // Both sides resolved before subtracting: git reports the REAL root while
+      // the caller's path may run through a symlink (on macOS every $TMPDIR
+      // does, and CI checkouts under /var hit the same thing). Subtracting the
+      // two spellings raw yields a `../../..`-shaped pathspec that matches
+      // nothing, `debtIdsAtRef` returns undefined, and the whole baseline check
+      // is skipped — silently, since "no prior baseline" is a legitimate state.
+      const gitRootReal = await realpath(modelGitRoot).catch(() => modelGitRoot);
+      const modelDirReal = await realpath(modelDir).catch(() => modelDir);
       const before = await debtIdsAtRef(
         modelGitRoot,
-        relative(modelGitRoot, modelDir),
+        relative(gitRootReal, modelDirReal),
         options.diffBase,
       );
       if (before) {
@@ -74,13 +140,30 @@ export async function runCheck(
     }
   }
 
-  if (!options.repoRoot) return { t0, ...(baselineViolations ? { baselineViolations } : {}) };
+  const debtIds = new Set(load.graph.byKind.debt.keys());
+  const nodeCount = Object.values(load.graph.byKind).reduce((n, m) => n + m.size, 0);
+  if (!options.repoRoot) {
+    return {
+      t0,
+      debtIds,
+      coverage: { inv1: "absent", nodeCount },
+      ...(baselineViolations ? { baselineViolations } : {}),
+    };
+  }
 
   // --- diff resolution over the scanned repo (B2) ---
   let diff: DiffInfo | undefined;
   let onlyFiles: Set<string> | undefined;
   if (options.diffBase) {
-    const changed = await changedFiles(options.repoRoot, options.diffBase);
+    const raw = await changedFiles(options.repoRoot, options.diffBase);
+    // `git diff --name-only` speaks GIT-TOP-LEVEL paths no matter which
+    // directory it ran in, while everything downstream — INV-1's `git grep`
+    // candidates, and the model's anchors — speaks REPO-ROOT paths. When
+    // `--repo-root` is the checkout root the two coincide, which is why this
+    // went unnoticed; point it at a subdirectory and the intersection is empty:
+    // INV-1 scans zero files and reports a clean result, and `affected` maps no
+    // node to any changed file.
+    const changed = raw ? await toRepoRootRelative(raw, options.repoRoot) : undefined;
     onlyFiles = changed ? new Set(changed) : undefined;
     diff = {
       baseRef: options.diffBase,
@@ -94,6 +177,8 @@ export async function runCheck(
   if (configResult.error) {
     return {
       t0,
+      debtIds,
+      coverage: { inv1: "config-broken", nodeCount },
       inv1ConfigError: configResult.error,
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
@@ -102,6 +187,8 @@ export async function runCheck(
   if (!configResult.config) {
     return {
       t0,
+      debtIds,
+      coverage: { inv1: "absent", nodeCount },
       ...(diff ? { diff } : {}),
       ...(baselineViolations ? { baselineViolations } : {}),
     };
@@ -114,6 +201,13 @@ export async function runCheck(
   );
   return {
     t0,
+    debtIds,
+    // `ran` follows the scan's own report, not the fact that we called it. A
+    // scan that could not start (no git checkout for `git grep`) produces zero
+    // write points, and calling that "ran" reintroduces exactly the misattribution
+    // the three-state type exists to kill: a PR deleting the config would be told
+    // "INV-1 ran at the base ref", about a layer that never started there either.
+    coverage: { inv1: inv1.ran ? "ran" : "scan-unavailable", nodeCount },
     inv1,
     ...(diff ? { diff } : {}),
     ...(baselineViolations ? { baselineViolations } : {}),

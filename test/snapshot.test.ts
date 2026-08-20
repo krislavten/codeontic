@@ -1185,10 +1185,13 @@ describe("`codeontic snapshot --drift-json` — machine-readable drift for PR-ti
       // MUST say so. Without this a PR job reads `addedEdges: []` and reports
       // "no new edges" on every PR forever, which is the silent pass the whole
       // PR-time delivery exists to prevent.
-      expect(parsed.edges).toEqual({
-        comparable: false,
-        reason: expect.stringContaining("no adapter resolved"),
-      });
+      // The reason is now produced by the snapshot itself rather than
+      // re-derived from the flags in the CLI (two places inferring the same
+      // state disagreed about it); assert on the SUBSTANCE — that it names the
+      // adapter and says the extraction did not run — not on the old phrasing.
+      expect(parsed.edges.comparable).toBe(false);
+      expect(parsed.edges.reason).toContain("adapter");
+      expect(parsed.edges.reason).toContain("never ran");
       // The two fields a PR job actually reads must survive the round trip as
       // arrays — this is the machine-readable contract issue #38 depends on.
       expect(Array.isArray(parsed.drift.addedEdges)).toBe(true);

@@ -9,6 +9,10 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "error"
+      },
+      "correctness": {
+        "noUnusedImports": "error",
+        "noUnusedVariables": "error"
       }
     }
   },

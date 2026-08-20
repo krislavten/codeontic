@@ -23,11 +23,15 @@ import { runBacktest } from "./commands/backtest.js";
 import { runCheck } from "./commands/check.js";
 import { runConformance } from "./commands/conformance.js";
 import { runCoverage } from "./commands/coverage.js";
+import { renderDriftMarkdown, renderDriftText, runDriftReport } from "./commands/drift-report.js";
+import { renderGateMarkdown, renderGateText } from "./commands/gate-render.js";
+import { runGate } from "./commands/gate.js";
 import { runGraph } from "./commands/graph.js";
 import { runHookPostEdit, runHookSessionStart } from "./commands/hook.js";
 import { INIT_NEXT_STEPS, runInit } from "./commands/init.js";
 import { runInspect } from "./commands/inspect.js";
 import { runOverview } from "./commands/overview.js";
+import { renderReportMarkdown, renderReportText, runReport } from "./commands/report.js";
 import { runSearchCli } from "./commands/search.js";
 import {
   type SnapshotDrift,
@@ -40,6 +44,7 @@ import {
 } from "./commands/snapshot.js";
 import { runTopology } from "./commands/topology.js";
 import { runView } from "./commands/view.js";
+import { writeStepSummary } from "./step-summary.js";
 
 const MANAGED_MARKER_HINT = `wrap managed content with "${MARKER_START}" / "${MARKER_END}"`;
 
@@ -76,6 +81,9 @@ const USAGE =
   "       codeontic inspect <node-id> [dir] [--depth n]\n" +
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
+  "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; the reading never fails the build (only --strict-adapter or a broken --adapter-path can)\n" +
+  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; the readings never fail the build (only --strict-adapter or a broken --adapter-path can)\n" +
+  "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base checks out the base ref in a temp worktree and runs the identical check there, so already-broken vs newly-broken is a set difference); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
   "       codeontic coverage [dir]   # model-side coverage: how much of the model is anchored\n" +
@@ -147,8 +155,23 @@ function readStringFlag(
 ): { value: string | undefined; error?: string } {
   const raw = flags[name];
   if (raw === undefined) return { value: undefined };
-  if (typeof raw === "string") return { value: raw };
-  return { value: undefined, error: `--${name} requires a value` };
+  if (typeof raw === "boolean") return { value: undefined, error: `--${name} requires a value` };
+  // An EMPTY value is a misconfigured caller, not a default. This matters most
+  // in CI, where flags are interpolated from variables: `--repo-root ""` used to
+  // reach `path.resolve("")`, which is the CURRENT WORKING DIRECTORY — so a
+  // pipeline with an unset variable scored a different tree than it named, and
+  // every "did the caller pass this?" guard downstream saw a value that was
+  // there. `--base ""` was worse: falsy, so the baseline comparison silently
+  // turned itself off and every pre-existing error read as newly introduced.
+  // Neither has a legitimate use; refusing here fixes both at the one place
+  // where the distinction between "absent" and "empty" still exists.
+  if (raw === "") {
+    return {
+      value: undefined,
+      error: `--${name} was given an empty value (an unset CI variable?) — pass a real value or drop the flag`,
+    };
+  }
+  return { value: raw };
 }
 
 /** Convention path a target repo's adapter module lives at, relative to targetDir. */
@@ -284,17 +307,62 @@ function failedBanner(reason: string): string {
  * absence. A *broken* adapter (`failed`) halts everywhere regardless: that was
  * already true on all six and is not a policy this flag gets to relax.
  */
+/**
+ * Why an adapter resolution stopped the command.
+ *
+ * `broken` means something is WRONG — a path that does not load, a malformed
+ * flag. Advisory commands must still fail on it: an adapter path with a typo in
+ * it would otherwise run green forever, and the run reports nothing while
+ * looking like it reported nothing to report.
+ *
+ * `absent-strict` means nothing is wrong; the caller asked for a hard failure
+ * when no adapter exists. Advisory commands honour it because it is an explicit
+ * opt-in, but it is the caller's choice, not a defect.
+ */
+type AdapterHaltCause = "broken" | "absent-strict";
+
+/**
+ * The adapter step for the two ADVISORY commands (`report`, `drift-report`).
+ *
+ * One function because the two of them kept drifting apart: each time one was
+ * fixed, the other kept the defect — `--strict-adapter` honoured in one and
+ * decorative in the other; the exit decision made early in one and returned
+ * early in the other, which printed a banner and no readings. Three review
+ * rounds in a row found the same shape in whichever command had not been
+ * touched.
+ *
+ * The contract it encodes: resolve the adapter, DECIDE whether this run should
+ * fail, and hand that decision back — never return early. The caller runs and
+ * renders everything it can either way, and applies the decision as its exit
+ * code at the end. "Failed" means the adapter is broken (a typo in
+ * `--adapter-path` must not hide) or the caller asked for it via
+ * `--strict-adapter`.
+ */
+async function advisoryAdapterGate(
+  flags: Record<string, string | boolean>,
+  targetDir: string,
+  io: CliIO,
+): Promise<{ adapter?: Adapter; failRun: boolean }> {
+  const status = await gateAdapter(flags, targetDir, io, true);
+  if (!("halt" in status)) {
+    return { failRun: false, ...(status.adapter ? { adapter: status.adapter } : {}) };
+  }
+  return {
+    failRun: status.cause === "broken" || flags["strict-adapter"] === true,
+  };
+}
+
 async function gateAdapter(
   flags: Record<string, string | boolean>,
   targetDir: string,
   io: CliIO,
   gateable: boolean,
-): Promise<{ adapter?: Adapter } | { halt: number }> {
+): Promise<{ adapter?: Adapter } | { halt: number; cause: AdapterHaltCause }> {
   const f = readStringFlag(flags, "adapter-path");
   if (f.error) {
     // CLI misuse (e.g. `--adapter-path` as the last token) — keep the usage hint.
     io.error(`${f.error}. ${USAGE}`);
-    return { halt: 1 };
+    return { halt: 1, cause: "broken" };
   }
 
   const status = await resolveAdapter(f.value, targetDir);
@@ -304,12 +372,12 @@ async function gateAdapter(
       return { adapter: status.adapter };
     case "failed":
       io.error(failedBanner(status.reason));
-      return { halt: 1 };
+      return { halt: 1, cause: "broken" };
     default: {
       // absent
       if (gateable && flags["strict-adapter"] === true) {
         io.error(ABSENT_STRICT_BANNER);
-        return { halt: 1 };
+        return { halt: 1, cause: "absent-strict" };
       }
       io.log(absentBanner(gateable));
       return {};
@@ -564,6 +632,193 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       io.log(`wrote ${result.outputPath}`);
       return 0;
     }
+    case "drift-report": {
+      const driftTargetDir = positionals[0] ?? process.cwd();
+      const driftRepoRoot = readStringFlag(flags, "repo-root");
+      const driftBase = readStringFlag(flags, "base");
+      const driftFormat = readStringFlag(flags, "format");
+      for (const f of [driftRepoRoot, driftBase, driftFormat]) {
+        if (f.error) {
+          io.error(`${f.error}. ${USAGE}`);
+          return 1;
+        }
+      }
+      if (!driftRepoRoot.value || !driftBase.value) {
+        io.error(`drift-report requires --repo-root <path> and --base <ref>. ${USAGE}`);
+        return 1;
+      }
+      if (driftFormat.value !== undefined && driftFormat.value !== "github") {
+        io.error(`--format must be "github" (got "${driftFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      // `gateable: true` so a BROKEN adapter is loud rather than silently
+      // producing an empty edge set (which would read as "no new edges").
+      //
+      // Its halt normally becomes a stated non-result rather than an exit code:
+      // this command is documented — usage line and changeset both — as never
+      // failing the caller. `--strict-adapter` is the one exception, because it
+      // is the caller SAYING they want the opposite; swallowing it printed
+      // "this is a hard failure because --strict-adapter is set" and then
+      // exited 0, and the banner's advice to "pass --strict-adapter to fail CI
+      // on this" was, on this command, never true.
+      const driftReportAdapter = await advisoryAdapterGate(flags, driftRepoRoot.value, io);
+      // Same reasoning as `report` above: an advisory step that throws turns a
+      // reading into a red build. A failure becomes a stated non-result.
+      let driftResult: Awaited<ReturnType<typeof runDriftReport>>;
+      if (!driftReportAdapter.adapter) {
+        driftResult = {
+          ran: false,
+          reason: "适配器不可用（缺失或加载失败，原因见上）——没有事实提取器就没有边可比",
+        };
+      } else {
+        try {
+          driftResult = await runDriftReport(driftTargetDir, {
+            repoRoot: resolvePath(driftRepoRoot.value),
+            base: driftBase.value,
+            adapter: driftReportAdapter.adapter,
+          });
+        } catch (err) {
+          driftResult = {
+            ran: false,
+            reason: `drift-report 抛错：${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+      io.log(renderDriftText(driftResult));
+      if (driftFormat.value === "github") {
+        const markdown = renderDriftMarkdown(driftResult);
+        if (!(await writeStepSummary(markdown))) io.log(markdown);
+      }
+      // Advisory: the READING never fails the caller (the adapter gate above is
+      // the one exception, and it is either a breakage or an opt-in). When the
+      // comparison could not run, the summary says so in words — that state is
+      // reported, not swallowed, and not turned into a red build either.
+      //
+      // Applied HERE, after both renderers have run: an early return would make
+      // a failing adapter produce a banner and no summary section at all, which
+      // is exactly what `report` was fixed for one commit ago.
+      return driftReportAdapter.failRun ? 1 : 0;
+    }
+    case "report": {
+      // Composition, not reimplementation: each section runs the very command
+      // it names, through this same dispatcher with a capturing io. There is no
+      // second code path to drift from the first.
+      const reportTargetDir = positionals[0] ?? process.cwd();
+      const reportRepoRoot = readStringFlag(flags, "repo-root");
+      const reportAdapter = readStringFlag(flags, "adapter-path");
+      const reportFormat = readStringFlag(flags, "format");
+      for (const f of [reportRepoRoot, reportAdapter, reportFormat]) {
+        if (f.error) {
+          io.error(`${f.error}. ${USAGE}`);
+          return 1;
+        }
+      }
+      if (reportFormat.value !== undefined && reportFormat.value !== "github") {
+        io.error(`--format must be "github" (got "${reportFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      // "never fails" has to survive an exception too, not just a non-zero
+      // exit: an unparseable model made `report` die with zero output, which is
+      // the one thing an advisory step must never do — the reader cannot tell
+      // "nothing to report" from "this never ran".
+      // Same shape as drift-report: resolve the adapter HERE, so "the adapter
+      // is broken / the caller demanded one" is decided in one place, on the
+      // adapter's own status. Deriving it from the sections' exit codes (the
+      // first attempt) counted any failure — a malformed model YAML making
+      // conformance throw — as an adapter problem, so `--strict-adapter`
+      // changed the exit code of runs that had no adapter issue at all.
+      const reportAdapterStatus = await advisoryAdapterGate(
+        flags,
+        reportRepoRoot.value ?? reportTargetDir,
+        io,
+      );
+      // Decided here, ACTED ON at the end. Returning straight away made the
+      // command produce a banner and nothing else — no sections, neither
+      // renderer — which is the exact confusion this command exists to prevent:
+      // a reader cannot tell "found nothing" from "never ran". The sections
+      // that need no adapter still have something to say, so they still say it,
+      // and the exit code carries the adapter's verdict afterwards.
+      const reportAdapterHalt = reportAdapterStatus.failRun;
+      let report: Awaited<ReturnType<typeof runReport>>;
+      try {
+        report = await runReport(
+          reportTargetDir,
+          {
+            ...(reportRepoRoot.value === undefined ? {} : { repoRoot: reportRepoRoot.value }),
+            ...(reportAdapter.value === undefined ? {} : { adapterPath: reportAdapter.value }),
+            ...(flags["no-cache"] === true ? { noCache: true } : {}),
+          },
+          (args, captureIo) => run(args, captureIo),
+        );
+      } catch (err) {
+        io.error(
+          `⚠ report 未能产出：${err instanceof Error ? err.message : String(err)} —— 这是管线故障，不是「没查出问题」。`,
+        );
+        return 0;
+      }
+      io.log(renderReportText(report));
+      if (reportFormat.value === "github") {
+        const markdown = renderReportMarkdown(report);
+        if (!(await writeStepSummary(markdown))) io.log(markdown);
+      }
+      // Advisory by construction: the readings themselves never fail the
+      // caller. The one way this command exits non-zero is the adapter gate
+      // above, which is either a real breakage or an explicit opt-in — and by
+      // now everything it could report has already been printed.
+      return reportAdapterHalt ? 1 : 0;
+    }
+    case "gate": {
+      // The CI entry point. Everything a workflow used to hand-roll around
+      // `check` — base comparison, cause attribution, the step summary, the
+      // exit code — is a return value here; see commands/gate.ts on why.
+      const gateTargetDir = resolvePath(positionals[0] ?? process.cwd());
+      const gateRepoRoot = readStringFlag(flags, "repo-root");
+      const gateBase = readStringFlag(flags, "base");
+      const gateFormat = readStringFlag(flags, "format");
+      for (const f of [gateRepoRoot, gateBase, gateFormat]) {
+        if (f.error) {
+          io.error(`${f.error}. ${USAGE}`);
+          return 1;
+        }
+      }
+      if (gateFormat.value !== undefined && gateFormat.value !== "github") {
+        io.error(`--format must be "github" (got "${gateFormat.value}"). ${USAGE}`);
+        return 1;
+      }
+      // `gate` is the CI entry point, so a partial run must not look like a
+      // pass. Without a repo root, anchor-existence and INV-1 do not run at all
+      // and the remaining model-only checks happily report "no model errors" —
+      // a green build that checked half of what its name implies. Requiring the
+      // flag makes the complete run the default; `--model-only` is the way to
+      // ask for the partial one, and it says so in the output.
+      if (gateRepoRoot.value === undefined && flags["model-only"] !== true) {
+        io.error(
+          `gate needs --repo-root <repo>: without it anchor-existence and INV-1 do not run, and the result would read as "clean" while half the gate never executed. Pass --model-only if a model-only check is what you want. ${USAGE}`,
+        );
+        return 1;
+      }
+      let gate: Awaited<ReturnType<typeof runGate>>;
+      try {
+        gate = await runGate(gateTargetDir, {
+          repoRoot: gateRepoRoot.value === undefined ? undefined : resolvePath(gateRepoRoot.value),
+          ...(flags["strict-anchors"] === true ? { strictAnchorExistence: true } : {}),
+          ...(gateBase.value === undefined ? {} : { base: gateBase.value }),
+        });
+      } catch (err) {
+        io.error(err instanceof Error ? err.message : String(err));
+        return 1;
+      }
+      io.log(renderGateText(gate));
+      if (gateFormat.value === "github") {
+        const markdown = renderGateMarkdown(gate);
+        if (!(await writeStepSummary(markdown))) {
+          // No $GITHUB_STEP_SUMMARY (running locally): print the markdown rather
+          // than silently producing nothing — the caller asked for it.
+          io.log(markdown);
+        }
+      }
+      return gate.exitCode;
+    }
     case "search": {
       // positionals[0] is the required query string, positionals[1] the target
       // dir — same shape as inspect. A third positional almost always means an
@@ -723,11 +978,14 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       // again" — both `reconcileFacts` and `checkLoopMechanism` read the same
       // flag so a single run compares apples to apples.
       // `!== true` (not `!== undefined`) matches every other boolean flag in
-      // this file (`strict-anchors`, `strict-adapter`, `no-cache`, `validate`,
-      // ...): `parseFlags` gives a bare `--flag` the value `true`; anything
-      // else (unset, or `--flag value` swallowing a stray token as a string)
-      // is treated as "not set". Established convention, not a gap specific
-      // to this flag.
+      // this file: `parseFlags` gives a bare `--flag` the value `true`, and
+      // anything else means unset.
+      //
+      // This comment used to add "or `--flag value` swallowing a stray token",
+      // and called that an established convention. It was not a convention, it
+      // was the bug: a swallowed token made the flag read as unset AND removed
+      // a positional. `parseFlags` now knows which flags take no value (see
+      // BOOLEAN_FLAGS there), so that case cannot arise.
       const followDelegation = flags["no-follow-delegation"] !== true;
       // Scope reconciliation to the signal kinds it is ABOUT. An adapter that
       // also emits facts of a different nature (topology edges, dependency
@@ -1205,21 +1463,16 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
         } else {
           const drift = diffSnapshots(prior, snapshot);
           // Projected from signals that already exist — never recomputed here
-          // (CONTRIBUTING: 派生判断只定义一处). `edgesSkippedReason` covers the
-          // "broke" case; the adapter check covers the case `Snapshot` calls a
-          // normal empty result but a PR gate must not.
-          const edgesUnavailableReason = drift.edgesSkippedReason
-            ? drift.edgesSkippedReason
-            : !repoRootFlag.value
-              ? // Without --repo-root `runSnapshot` never calls `runFacts`, so
-                // NOTHING was scanned and the edge set is empty for that reason
-                // alone — even though a convention-path adapter did resolve.
-                // Trusting the adapter's presence alone would report "no new
-                // edges" on every PR of a job that simply forgot the flag.
-                "no --repo-root given — the repo was never scanned, so an empty addedEdges means 'not checked', not 'none added'"
-              : !snapshotAdapter.adapter
-                ? "no adapter resolved — no topology edges were extracted, so an empty addedEdges means 'not checked', not 'none added'"
-                : undefined;
+          // (CONTRIBUTING: 派生判断只定义一处). The wording comes from whichever
+          // snapshot produced it; this only picks WHICH one to show.
+          //
+          // THIS run's reason first. `diffSnapshots` reports the previous
+          // snapshot's cause when both sides lack edges, and that one is a
+          // property of a file on disk from some earlier run — true, but not
+          // what the person running this command can act on. When the current
+          // run is itself unable to produce edges, that is the actionable half.
+          const edgesUnavailableReason =
+            snapshot.topologyEdgesUnavailable ?? drift.edgesSkippedReason;
           const edges: DriftJsonEdgeStatus = edgesUnavailableReason
             ? { comparable: false, reason: edgesUnavailableReason }
             : { comparable: true };

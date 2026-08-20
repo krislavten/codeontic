@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,16 +14,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(targetDir, { recursive: true, force: true });
 });
-
-async function writeModel(nodes: Record<string, unknown>[]) {
-  const modelDir = join(targetDir, ".codeontic", "model", "loops");
-  await mkdir(modelDir, { recursive: true });
-  await writeFile(
-    join(modelDir, "test.yaml"),
-    nodes.map((n) => JSON.stringify(n)).join("\n---\n"),
-    "utf8",
-  );
-}
 
 async function writeYaml(relPath: string, content: string) {
   const dir = join(targetDir, ".codeontic", "model", relPath, "..");

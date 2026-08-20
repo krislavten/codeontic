@@ -40,8 +40,9 @@ export function fileContainsCruxText(content: string, text: string): boolean {
  * as anchor-symbol, for the same reason: text matching's false-negative
  * rate on legitimate refactors must stay cheap.
  *
- * Also validates that each crux's `anchor` references one of the node's
- * own `anchors` (referential integrity within the node).
+ * The referential half — each crux's `anchor` must be one of the node's own
+ * `anchors` — lives in `checkCruxReferences` below, because it is a property of
+ * the MODEL ALONE and must run even when there is no checkout to read.
  */
 export async function checkAnchorCrux(graph: ModelGraph, repoRoot: string): Promise<Violation[]> {
   const violations: Violation[] = [];
@@ -53,15 +54,9 @@ export async function checkAnchorCrux(graph: ModelGraph, repoRoot: string): Prom
 
     for (const crux of node.crux) {
       if (!nodeAnchors.has(crux.anchor)) {
-        violations.push({
-          check: "anchor-crux",
-          severity: "error",
-          message: `${node.id}.crux references anchor "${crux.anchor}" which is not in ${node.id}.anchors — crux is a refinement of an existing anchor`,
-          nodeId: node.id,
-        });
+        // Reported by checkCruxReferences, which runs unconditionally.
         continue;
       }
-
       const filePath = anchorFilePath(crux.anchor);
       if (!filePath) continue;
       if (!isParseableSource(filePath)) continue;
@@ -86,5 +81,34 @@ export async function checkAnchorCrux(graph: ModelGraph, repoRoot: string): Prom
     }
   }
 
+  return violations;
+}
+
+/**
+ * The crux check's MODEL-ONLY half: every `crux.anchor` must be one of the
+ * node's own `anchors`.
+ *
+ * Split out of `checkAnchorCrux` because that one needs a checkout to read
+ * file contents, and T0 therefore only calls it when a repoRoot is given. This
+ * half needs nothing but the graph — leaving it in there meant
+ * `gate --model-only` printed "no MODEL errors" while a model-level
+ * inconsistency sat right there, and the same tree failed as soon as a
+ * repoRoot was passed.
+ */
+export function checkCruxReferences(graph: ModelGraph): Violation[] {
+  const violations: Violation[] = [];
+  for (const node of [...graph.byKind.loop.values(), ...graph.byKind.flow.values()]) {
+    if (!node.crux || node.crux.length === 0) continue;
+    const nodeAnchors = new Set(node.anchors);
+    for (const crux of node.crux) {
+      if (nodeAnchors.has(crux.anchor)) continue;
+      violations.push({
+        check: "anchor-crux",
+        severity: "error",
+        message: `${node.id}.crux references anchor "${crux.anchor}" which is not in ${node.id}.anchors — crux is a refinement of an existing anchor`,
+        nodeId: node.id,
+      });
+    }
+  }
   return violations;
 }

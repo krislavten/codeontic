@@ -11,7 +11,7 @@ import {
   Flow,
   Loop,
 } from "../src/schema/index.js";
-import { checkAnchorCrux } from "../src/validate/crux.js";
+import { checkAnchorCrux, checkCruxReferences } from "../src/validate/crux.js";
 
 let repoRoot: string;
 
@@ -130,11 +130,17 @@ describe("checkAnchorCrux — validation", () => {
         file: "loops/L1.yaml",
       },
     ]);
-    const violations = await checkAnchorCrux(graph, repoRoot);
+    // This half moved to `checkCruxReferences`, which needs no checkout: it is
+    // a property of the model alone, and leaving it behind a repoRoot meant
+    // `gate --model-only` reported "no MODEL errors" with this sitting in it.
+    const violations = checkCruxReferences(graph);
     expect(violations).toHaveLength(1);
     expect(violations[0]?.severity).toBe("error");
     expect(violations[0]?.check).toBe("anchor-crux");
     expect(violations[0]?.message).toContain("not in L1.anchors");
+
+    // …and the checkout-reading half no longer reports it twice.
+    expect(await checkAnchorCrux(graph, repoRoot)).toHaveLength(0);
   });
 
   it("warns when crux text is no longer found in the file", async () => {
