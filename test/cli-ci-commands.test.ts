@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { driftAnnotation } from "../src/cli/commands/drift-report.js";
+import { reportAnnotation } from "../src/cli/commands/report.js";
+import type { SnapshotDrift } from "../src/cli/commands/snapshot.js";
+import { errorAnnotation } from "../src/cli/gh-annotation.js";
 import { run } from "../src/cli/run.js";
 import { seedSyntheticModel } from "./support/seed-synthetic-model.js";
 
@@ -935,5 +939,119 @@ describe("report / drift-report — argv-level", () => {
     const code = await run(["drift-report", repo, "--repo-root", repo, "--base", ""], io);
     expect(code).toBe(1);
     expect(out.join("\n")).toContain("empty value");
+  });
+});
+
+/**
+ * The advisory tier exits 0 by design, so "the reading did not happen" has no
+ * exit code to travel on. The annotation is its only PR-visible channel, and it
+ * only works if it lands on the step's REAL stdout and nowhere else: inside the
+ * summary it is invisible to GitHub and visible to the reader as a stray
+ * `::error` line — the previous consumer split the two apart with a pair of
+ * greps precisely because getting it wrong is easy and silent.
+ */
+/** A comparison that ran and found nothing changed — the quiet, healthy case. */
+const NO_DRIFT: SnapshotDrift = {
+  adapterBumped: false,
+  addedFacts: [],
+  removedFacts: [],
+  changedFacts: [],
+  addedEdges: [],
+  removedEdges: [],
+  t0Delta: { errors: 0, warnings: 0 },
+  inv1Delta: { violations: 0, unanalyzable: 0 },
+  coverageRatioDelta: {
+    nodesTotalBefore: 0,
+    nodesTotalAfter: 0,
+    nodesAnchoredBefore: 0,
+    nodesAnchoredAfter: 0,
+    coveredFileCountBefore: 0,
+    coveredFileCountAfter: 0,
+  },
+  clean: true,
+};
+
+describe("--format github — the ::error annotation", () => {
+  let summaryPath: string;
+  let previousSummary: string | undefined;
+
+  beforeEach(async () => {
+    previousSummary = process.env.GITHUB_STEP_SUMMARY;
+    summaryPath = join(repo, "step-summary.md");
+    process.env.GITHUB_STEP_SUMMARY = summaryPath;
+  });
+
+  afterEach(() => {
+    restoreSummaryEnv(previousSummary);
+  });
+
+  /** Whatever landed in the summary file (empty string when nothing did). */
+  async function summary(): Promise<string> {
+    return await readFile(summaryPath, "utf8").catch(() => "");
+  }
+
+  it("report annotates stdout when a section did not run, and keeps it out of the summary", async () => {
+    // No --repo-root → the reconcile section legitimately cannot run. The
+    // step still exits 0; the annotation is what makes that visible.
+    const code = await run(["report", repo, "--format", "github"], io);
+    expect(code).toBe(0);
+    const stdout = out.join("\n");
+    expect(stdout).toContain("::error title=");
+    expect(stdout).toContain("codeontic 报告档没跑完");
+    // The summary got the readings…
+    expect(await summary()).toContain("codeontic 报告档");
+    // …and must not have got the workflow command.
+    expect(await summary()).not.toContain("::error");
+  });
+
+  it("report emits no annotation without --format github", async () => {
+    // Same degraded run, plain terminal output: a bare `::error` line there is
+    // noise, and on a self-hosted runner scraping logs it is a false alarm.
+    const code = await run(["report", repo], io);
+    expect(code).toBe(0);
+    expect(out.join("\n")).not.toContain("::error");
+  });
+
+  it("drift-report annotates when the comparison could not be made", async () => {
+    // This fixture has no adapter, so there is no fact extractor and therefore
+    // no edges to compare — `ran: false`, the state that must never read as
+    // "no new edges".
+    const code = await run(
+      ["drift-report", repo, "--repo-root", repo, "--base", "main", "--format", "github"],
+      io,
+    );
+    expect(code).toBe(0);
+    const stdout = out.join("\n");
+    expect(stdout).toContain("::error title=");
+    expect(stdout).toContain("codeontic 边比较不可用");
+    expect(await summary()).toContain("服务间调用边");
+    expect(await summary()).not.toContain("::error");
+  });
+
+  it("drift-report emits no annotation without --format github", async () => {
+    const code = await run(["drift-report", repo, "--repo-root", repo, "--base", "main"], io);
+    expect(code).toBe(0);
+    expect(out.join("\n")).not.toContain("::error");
+  });
+
+  it("escapes what would otherwise truncate or split the command", () => {
+    // A raw newline ends the workflow command, so everything after it would be
+    // dropped by GitHub and printed as loose text; a raw `:` in the title ends
+    // the property list, swallowing the rest of the title into the message.
+    const line = errorAnnotation("a:b,c", "one\ntwo 100% done\r");
+    expect(line).toBe("::error title=a%3Ab%2Cc::one%0Atwo 100%25 done%0D");
+    expect(line.split("\n")).toHaveLength(1);
+  });
+
+  it("says nothing when there is nothing to say", () => {
+    // undefined, not "": a caller that prints an empty string emits a blank
+    // line and believes it annotated.
+    expect(reportAnnotation({ sections: [], degraded: false })).toBeUndefined();
+    expect(driftAnnotation({ ran: true, drift: NO_DRIFT })).toBeUndefined();
+    // An empty edge set is a scan that RAN and found nothing — a legitimate
+    // result, not a breakage. Annotating it would mark every repo whose
+    // extractor finds no cross-service calls, and a mark that fires on the
+    // normal case gets muted.
+    expect(driftAnnotation({ ran: true, drift: NO_DRIFT, topologyEmpty: true })).toBeUndefined();
   });
 });

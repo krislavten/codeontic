@@ -208,29 +208,19 @@ export interface SnapshotDrift {
    * between two snapshots for the SAME (from, to) pair is not itself
    * surfaced here as an add+remove.
    *
-   * MACHINE-READABLE CONSUMPTION CONTRACT (issue #38 §3 — target-repo
-   * PR-side delivery; NOT YET WIRED into either this repo's CLI or any
-   * target repo's CI, tracked as two separate open follow-ups):
-   *   A PR job wanting "which edges did THIS PR add" needs two `Snapshot`s
-   *   — a base one for the PR's merge-base commit and a current one for the
-   *   PR head — and computes `diffSnapshots(base, current).addedEdges`.
-   *   Each element is a plain `{ from, to, toKind? }` object (see
-   *   `TopologyEdgeDigest`), directly `JSON.stringify`-able for a PR-comment
-   *   payload — no additional serialization step is needed. Two gaps stand
-   *   between that and a working target-repo integration:
-   *     1. (this repo, open) `codeontic snapshot --drift` today only prints
-   *        `renderDrift`'s prose to stdout (see run.ts's `snapshot` case) —
-   *        there is no flag that emits `SnapshotDrift` itself as JSON, the
-   *        way `codeontic backtest --json` already does for its own report.
-   *        `package.json` also has no `main`/`exports`, only `bin` — a PR
-   *        job cannot `import` this module directly today, so a CLI flag
-   *        (not a library import) is the realistic path.
-   *     2. (target repo, open) obtaining the BASE snapshot for a PR's
-   *        merge-base commit — nightly already writes one to `actions/cache`
-   *        per this issue's own accounting, so a PR job would restore that
-   *        cache entry (or otherwise produce a base snapshot) before it can
-   *        call `diffSnapshots`. How that CI wiring happens is entirely the
-   *        target repo's call and out of this repo's scope.
+   * PR-SIDE DELIVERY (issue #38 §3) is `codeontic drift-report`, which takes
+   * BOTH snapshots itself — base from a temp worktree at the merge-base, head
+   * from the working checkout — and renders `addedEdges`/`removedEdges` for the
+   * author. Each element is a plain `{ from, to, toKind? }` object (see
+   * `TopologyEdgeDigest`), so `snapshot --drift-json` can hand the same data to
+   * a caller that wants to render it differently.
+   *
+   * This comment used to describe that delivery as two open gaps: no JSON flag
+   * (closed by `--drift-json` in 0.8.0) and "obtaining a base snapshot is the
+   * target repo's call" (closed by `drift-report` in 0.13, after the one repo
+   * that tried spent ~250 lines of YAML on it and still let extractor churn
+   * masquerade as architecture change). Leaving the old text in place would send
+   * the next reader off to build a third time what already exists twice.
    */
   addedEdges: TopologyEdgeDigest[];
   removedEdges: TopologyEdgeDigest[];

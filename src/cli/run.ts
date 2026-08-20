@@ -23,7 +23,12 @@ import { runBacktest } from "./commands/backtest.js";
 import { runCheck } from "./commands/check.js";
 import { runConformance } from "./commands/conformance.js";
 import { runCoverage } from "./commands/coverage.js";
-import { renderDriftMarkdown, renderDriftText, runDriftReport } from "./commands/drift-report.js";
+import {
+  driftAnnotation,
+  renderDriftMarkdown,
+  renderDriftText,
+  runDriftReport,
+} from "./commands/drift-report.js";
 import { renderGateMarkdown, renderGateText } from "./commands/gate-render.js";
 import { runGate } from "./commands/gate.js";
 import { runGraph } from "./commands/graph.js";
@@ -31,7 +36,12 @@ import { runHookPostEdit, runHookSessionStart } from "./commands/hook.js";
 import { INIT_NEXT_STEPS, runInit } from "./commands/init.js";
 import { runInspect } from "./commands/inspect.js";
 import { runOverview } from "./commands/overview.js";
-import { renderReportMarkdown, renderReportText, runReport } from "./commands/report.js";
+import {
+  renderReportMarkdown,
+  renderReportText,
+  reportAnnotation,
+  runReport,
+} from "./commands/report.js";
 import { runSearchCli } from "./commands/search.js";
 import {
   type SnapshotDrift,
@@ -81,8 +91,8 @@ const USAGE =
   "       codeontic inspect <node-id> [dir] [--depth n]\n" +
   "       codeontic <impact|plan|scenario|evidence|matrix> <id> [dir]\n" +
   '       codeontic search "<query>" [dir]   # free-text IDF search over the model (quote multi-word queries); CLI twin of the model_search MCP tool\n' +
-  "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; the reading never fails the build (only --strict-adapter or a broken --adapter-path can)\n" +
-  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; the readings never fail the build (only --strict-adapter or a broken --adapter-path can)\n" +
+  "       codeontic drift-report [dir] --repo-root path --base ref [--adapter-path path] [--format github]   # topology edges this change adds/removes; both snapshots are taken by THIS process (same adapter, same config) so extractor churn cannot masquerade as architecture change; the reading never fails the build (only --strict-adapter or a broken --adapter-path can); --format github appends to $GITHUB_STEP_SUMMARY and, when the reading did NOT happen, prints a ::error annotation so a green step still shows the breakage on the PR\n" +
+  "       codeontic report [dir] [--repo-root path] [--adapter-path path] [--format github]   # the advisory half of a CI run: reconcile + coverage + conformance in one pass, with the caveats that make them readable together; the readings never fail the build (only --strict-adapter or a broken --adapter-path can); --format github as for drift-report, annotation included\n" +
   "       codeontic gate [dir] --repo-root path [--base ref] [--strict-anchors] [--model-only] [--format github]   # CI gate: fails ONLY on errors this change introduced (--base checks out the base ref in a temp worktree and runs the identical check there, so already-broken vs newly-broken is a set difference); --repo-root is required so anchors+INV-1 really run (--model-only opts out, loudly); --format github appends to $GITHUB_STEP_SUMMARY\n" +
   "       codeontic mcp [dir]   # start the stdio MCP server\n" +
   "       codeontic facts [repo] [--adapter-path path]   # extract implementation facts (no adapter → T0-only mode)\n" +
@@ -686,6 +696,12 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       }
       io.log(renderDriftText(driftResult));
       if (driftFormat.value === "github") {
+        // On the REAL io, never on a capturing one, and never into the markdown:
+        // GitHub only parses workflow commands off the step's stdout. Emitted
+        // before the summary write so it survives a summary that cannot be
+        // written at all — that failure is itself a reason to want the mark.
+        const note = driftAnnotation(driftResult);
+        if (note) io.log(note);
         const markdown = renderDriftMarkdown(driftResult);
         if (!(await writeStepSummary(markdown))) io.log(markdown);
       }
@@ -758,6 +774,12 @@ export async function run(argv: string[], io: CliIO): Promise<number> {
       }
       io.log(renderReportText(report));
       if (reportFormat.value === "github") {
+        // Same contract as drift-report's: real io, outside the markdown. Note
+        // that the sections above ran under a CAPTURING io — emitting from
+        // inside `runReport` would bury the annotation in a code block, where
+        // GitHub never looks.
+        const note = reportAnnotation(report);
+        if (note) io.log(note);
         const markdown = renderReportMarkdown(report);
         if (!(await writeStepSummary(markdown))) io.log(markdown);
       }

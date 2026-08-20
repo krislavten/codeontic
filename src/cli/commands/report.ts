@@ -1,3 +1,4 @@
+import { errorAnnotation } from "../gh-annotation.js";
 import type { CliIO } from "../run.js";
 
 /**
@@ -148,6 +149,25 @@ export function renderReportMarkdown(result: ReportResult): string {
       "或调用方用 `--strict-adapter` 明说「没有适配器就算失败」。）",
   );
   return `${out.join("\n")}\n`;
+}
+
+/**
+ * The PR-visible half of `degraded` (see cli/gh-annotation.ts).
+ *
+ * Deliberately does not name a cause, for the same reason `degraded` doesn't:
+ * an annotation reading "适配器未加载" on a run whose only gap was a missing
+ * `--repo-root` sends the reader to debug an adapter that is fine. It points at
+ * the section that already states its own reason.
+ *
+ * Returns undefined — not an empty string — when there is nothing to annotate,
+ * so a caller cannot print a blank line and think it emitted something.
+ */
+export function reportAnnotation(result: ReportResult): string | undefined {
+  if (!result.degraded) return undefined;
+  return errorAnnotation(
+    "codeontic 报告档没跑完",
+    "有小节没有产出完整读数 —— 这是「这次没查」，不是「没查出问题」。是哪一节、什么原因，见 job summary 里那一节自己的内容。",
+  );
 }
 
 export function renderReportText(result: ReportResult): string {
