@@ -1,6 +1,6 @@
 {
   "name": "codeontic",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "受本体论启发的行为建模引擎：把「系统应该怎么运转」写成机器可校验的模型并绑定到真实代码，每次 PR 零 LLM 对账，防止实现与认知漂移。",
   "repository": {
     "type": "git",
